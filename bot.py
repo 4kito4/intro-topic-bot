@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 import discord
 from discord.ext import tasks
@@ -23,8 +24,27 @@ RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直�
 RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
 
 
+RefreshVerdict = Literal["ok", "optout", "too_short"]
+RefreshOutcome = Literal["ok", "discarded", "skip"]
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _judge_refresh(
+    message: discord.Message, optout_emoji: str, min_intro_length: int
+) -> RefreshVerdict:
+    """再取得した自己紹介を使ってよいか判定する（Discord API を叩かない）。
+
+    オプトアウトは「本人以外が付けた場合」も有効。本人判定には reaction.users() の
+    追加 fetch が必要でレート制限が増えるため、まずは誰が付けても破棄とする。
+    """
+    if any(str(reaction.emoji) == optout_emoji for reaction in message.reactions):
+        return "optout"
+    if len(message.content) < min_intro_length:
+        return "too_short"
+    return "ok"
 
 
 class IntroTopicBot(discord.Client):
@@ -136,9 +156,21 @@ class IntroTopicBot(discord.Client):
         if reason is not None:
             logger.debug("投稿見送り: %s", reason)
             return
-        # 優先順位: 新規キュー → 再利用プール → 自己紹介を使わない汎用お題
-        item = self._pick_item()
-        pool_item = self._pick_pool_item() if item is None else None
+        # 優先順位: 新規キュー → 再利用プール → 自己紹介を使わない汎用お題。
+        # 生成直前に元メッセージを取り直し、破棄された候補はその周回のうちに次へ送る
+        chosen: QueueItem | PoolItem | None = None
+        for candidate in (self._pick_item(), self._pick_pool_item()):
+            if candidate is None:
+                continue
+            outcome = await self._refresh_source(candidate)
+            if outcome == "skip":
+                logger.debug("投稿見送り: 元メッセージを再取得できなかった")
+                return
+            if outcome == "ok":
+                chosen = candidate
+                break
+        item = chosen if isinstance(chosen, QueueItem) else None
+        pool_item = chosen if isinstance(chosen, PoolItem) else None
         if item is not None:
             source, source_id, intro_text = "新規", item.message_id, item.content
         elif pool_item is not None:
@@ -210,6 +242,57 @@ class IntroTopicBot(discord.Client):
             source, source_id, result.format, result.used_search, review_label,
             result.topic_question,
         )
+
+    async def _refresh_source(self, source: QueueItem | PoolItem) -> RefreshOutcome:
+        """生成直前に元メッセージを1件だけ取り直し、削除・編集・オプトアウトに追随する。
+
+        戻り値: "ok"（使ってよい）/ "discarded"（破棄したので次の候補へ）/ "skip"（今回は見送り）
+        """
+        channel = self.get_channel(self.settings.intro_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            raise RuntimeError(f"自己紹介チャンネルが見つかりません: {self.settings.intro_channel_id}")
+        try:
+            message = await channel.fetch_message(source.message_id)
+        except discord.NotFound:
+            logger.info("元メッセージが削除済みのため破棄: message_id=%s", source.message_id)
+            self._discard_source(source)
+            return "discarded"
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            # 権限・ネットワークの一時障害で本文を失わないよう、破棄せず見送る
+            logger.warning(
+                "元メッセージを取得できないため今回は見送り: message_id=%s (%s)",
+                source.message_id, exc,
+            )
+            return "skip"
+
+        verdict = _judge_refresh(
+            message, self.settings.optout_emoji, self.settings.min_intro_length
+        )
+        if verdict == "optout":
+            logger.info(
+                "オプトアウト(%s)により破棄: message_id=%s",
+                self.settings.optout_emoji, source.message_id,
+            )
+            self._discard_source(source)
+            return "discarded"
+        if verdict == "too_short":
+            logger.info("編集後の本文が短すぎるため破棄: message_id=%s", source.message_id)
+            self._discard_source(source)
+            return "discarded"
+        if message.content != source.content:
+            logger.info("元メッセージの編集を反映: message_id=%s", source.message_id)
+            source.content = message.content
+            self.save()
+        return "ok"
+
+    def _discard_source(self, source: QueueItem | PoolItem) -> None:
+        """使えなくなった自己紹介をキュー / 再利用プールから取り除く。"""
+        if isinstance(source, QueueItem):
+            self.state.queue.remove(source)
+            self.state.processed_ids.append(source.message_id)
+        else:
+            self.state.intro_pool.remove(source)
+        self.save()
 
     def _prune_expired_pool(self) -> None:
         """プライバシー配慮: 保持期限を過ぎた自己紹介本文をプールから削除する。"""

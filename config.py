@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 PROJECT_DIR = Path(__file__).resolve().parent
 STATE_PATH = PROJECT_DIR / "state.json"
+DEFAULT_OPTOUT_EMOJI = "🚫"
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class Settings:
     post_window_end: int
     min_intro_length: int
     pool_max_age_days: int
+    optout_emoji: str
 
 
 def _require(name: str) -> str:
@@ -68,6 +70,7 @@ def load_settings() -> Settings:
         post_window_end=_require_int("POST_WINDOW_END", 22),
         min_intro_length=_require_int("MIN_INTRO_LENGTH", 50),
         pool_max_age_days=_require_int("POOL_MAX_AGE_DAYS", 90),
+        optout_emoji=os.environ.get("OPTOUT_EMOJI", "").strip() or DEFAULT_OPTOUT_EMOJI,
     )
 
 
