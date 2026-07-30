@@ -122,6 +122,13 @@ class IntroTopicBot(discord.Client):
 
     @tasks.loop(minutes=5)
     async def post_worker(self) -> None:
+        """想定外の例外でループが停止しないよう、本体処理を包んで次周回へ継続する。"""
+        try:
+            await self._post_worker_body()
+        except Exception:
+            logger.exception("投稿ワーカーで想定外のエラー。次周回に継続します")
+
+    async def _post_worker_body(self) -> None:
         reason = self._blocked_reason()
         if reason is not None:
             logger.debug("投稿見送り: %s", reason)
