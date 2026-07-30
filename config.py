@@ -28,6 +28,7 @@ class Settings:
     post_window_start: int
     post_window_end: int
     min_intro_length: int
+    pool_max_age_days: int
 
 
 def _require(name: str) -> str:
@@ -66,6 +67,7 @@ def load_settings() -> Settings:
         post_window_start=_require_int("POST_WINDOW_START", 19),
         post_window_end=_require_int("POST_WINDOW_END", 22),
         min_intro_length=_require_int("MIN_INTRO_LENGTH", 50),
+        pool_max_age_days=_require_int("POOL_MAX_AGE_DAYS", 90),
     )
 
 

@@ -53,7 +53,7 @@ class ReviewResult(BaseModel):
 
 
 def generate_topic(
-    intro_text: str,
+    intro_text: str | None,
     api_key: str,
     model: str,
     recent_topics: list[str] | None = None,
@@ -62,6 +62,7 @@ def generate_topic(
 ) -> tuple[TopicResult, ReviewResult | None]:
     """自己紹介文から話題を生成する。API 失敗時は例外を送出する（呼び出し側でリトライ管理）。
 
+    intro_text: 参考にする自己紹介文。None なら自己紹介を参照しない汎用お題を作る。
     recent_topics: 直近に投稿したお題。テーマ・形式の重複を避けるためにプロンプトへ渡す。
     required_format: 今回書かせるお題の形式。None ならモデルに任せる。
     good_examples: 実際に反応が良かったお題。few-shot としてプロンプトへ渡す。
@@ -93,15 +94,22 @@ def generate_topic(
 
 
 def _build_prompt(
-    intro_text: str,
+    intro_text: str | None,
     recent_topics: list[str] | None,
     required_format: TopicFormat | None,
     good_examples: list[str] | None,
 ) -> str:
-    prompt = (
-        "次の自己紹介文を参考に、サーバー全体向けのお題を作ってください。\n\n"
-        f"---\n{intro_text}\n---"
-    )
+    if intro_text is None:
+        prompt = (
+            "自己紹介文はありません。サーバー（学生コミュニティで、AI に興味がある人が多い）"
+            "全体に向けた一般的なお題を作ってください。"
+            "extracted_interests は空リストにしてください。"
+        )
+    else:
+        prompt = (
+            "次の自己紹介文を参考に、サーバー全体向けのお題を作ってください。\n\n"
+            f"---\n{intro_text}\n---"
+        )
     if recent_topics:
         listed = "\n".join(f"- {t}" for t in recent_topics)
         prompt += (

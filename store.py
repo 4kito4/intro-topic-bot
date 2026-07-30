@@ -23,6 +23,20 @@ class QueueItem:
 
 
 @dataclass
+class PoolItem:
+    """投稿に使い終わった自己紹介。新規が無い期間の話題ネタとして再利用する。"""
+
+    message_id: int
+    content: str
+    created_at: str  # ISO 8601 (aware)
+    used_count: int = 0
+    last_used_at: str | None = None  # ISO 8601 (aware)
+
+    def created_dt(self) -> datetime:
+        return datetime.fromisoformat(self.created_at)
+
+
+@dataclass
 class State:
     processed_ids: list[int] = field(default_factory=list)
     queue: list[QueueItem] = field(default_factory=list)
@@ -31,6 +45,7 @@ class State:
     chat_activity: list[str] = field(default_factory=list)  # 雑談の直近発言時刻 (ISO)
     posted_topics: list[str] = field(default_factory=list)  # 投稿済みお題（多様性確保用、直近分）
     posted_formats: list[str] = field(default_factory=list)  # 投稿済みお題の形式（ローテーション用）
+    intro_pool: list[PoolItem] = field(default_factory=list)  # 使用済み自己紹介の再利用プール
 
     def is_processed(self, message_id: int) -> bool:
         return message_id in self.processed_ids or any(
@@ -54,6 +69,7 @@ def load_state(path: Path) -> State:
         chat_activity=chat_activity,
         posted_topics=raw.get("posted_topics", []),
         posted_formats=raw.get("posted_formats", []),
+        intro_pool=[PoolItem(**item) for item in raw.get("intro_pool", [])],
     )
 
 

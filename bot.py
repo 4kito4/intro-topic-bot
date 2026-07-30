@@ -11,7 +11,7 @@ import discord
 from discord.ext import tasks
 
 from config import STATE_PATH, Settings, load_settings
-from store import QueueItem, State, load_state, save_state
+from store import PoolItem, QueueItem, State, load_state, save_state
 from topic_generator import TOPIC_FORMATS, TopicFormat, generate_topic
 
 logger = logging.getLogger("intro_topic_bot")
@@ -131,25 +131,35 @@ class IntroTopicBot(discord.Client):
             logger.exception("投稿ワーカーで想定外のエラー。次周回に継続します")
 
     async def _post_worker_body(self) -> None:
+        self._prune_expired_pool()
         reason = self._blocked_reason()
         if reason is not None:
             logger.debug("投稿見送り: %s", reason)
             return
+        # 優先順位: 新規キュー → 再利用プール → 自己紹介を使わない汎用お題
         item = self._pick_item()
-        if item is None:
-            logger.debug("投稿見送り: 遅延時間を満たす自己紹介がない")
-            return
+        pool_item = self._pick_pool_item() if item is None else None
+        if item is not None:
+            source, source_id, intro_text = "新規", item.message_id, item.content
+        elif pool_item is not None:
+            source, source_id, intro_text = "プール", pool_item.message_id, pool_item.content
+        else:
+            source, source_id, intro_text = "汎用", None, None
         required_format = self._pick_format()
         try:
             result, review = await asyncio.to_thread(
                 generate_topic,
-                item.content,
+                intro_text,
                 self.settings.gemini_api_key,
                 self.settings.gemini_model,
                 self.state.posted_topics[-RECENT_TOPICS_KEPT:],
                 required_format,
             )
         except Exception:
+            if item is None:
+                # プール由来・汎用由来は捨てるものがないのでリトライ管理は不要
+                logger.exception("話題生成に失敗 (種別=%s, message_id=%s)", source, source_id)
+                return
             item.retry_count += 1
             logger.exception(
                 "話題生成に失敗 (message_id=%s, %d/%d 回目)",
@@ -168,9 +178,24 @@ class IntroTopicBot(discord.Client):
         body = f"{result.lead_in}\n{result.topic_question}" if result.lead_in else result.topic_question
         await channel.send(f"💭 **お題**\n{body}")
 
-        self.state.queue.remove(item)
-        self.state.processed_ids.append(item.message_id)
-        self.state.last_posted_at = now_utc().isoformat()
+        now = now_utc()
+        if item is not None:
+            self.state.queue.remove(item)
+            self.state.processed_ids.append(item.message_id)
+            # 新規が来ない期間もお題を出せるよう、本文は破棄せず再利用プールへ移す
+            self.state.intro_pool.append(
+                PoolItem(
+                    message_id=item.message_id,
+                    content=item.content,
+                    created_at=item.created_at,
+                    used_count=1,
+                    last_used_at=now.isoformat(),
+                )
+            )
+        elif pool_item is not None:
+            pool_item.used_count += 1
+            pool_item.last_used_at = now.isoformat()
+        self.state.last_posted_at = now.isoformat()
         self.state.posted_topics = (self.state.posted_topics + [result.topic_question])[
             -RECENT_TOPICS_KEPT:
         ]
@@ -181,10 +206,30 @@ class IntroTopicBot(discord.Client):
         self.save()
         review_label = "未実施" if review is None else ("合格" if review.approved else "不合格")
         logger.info(
-            "話題を投稿 (message_id=%s, 形式=%s, 検索使用=%s, 審査=%s): %s",
-            item.message_id, result.format, result.used_search, review_label,
+            "話題を投稿 (種別=%s, message_id=%s, 形式=%s, 検索使用=%s, 審査=%s): %s",
+            source, source_id, result.format, result.used_search, review_label,
             result.topic_question,
         )
+
+    def _prune_expired_pool(self) -> None:
+        """プライバシー配慮: 保持期限を過ぎた自己紹介本文をプールから削除する。"""
+        cutoff = now_utc() - timedelta(days=self.settings.pool_max_age_days)
+        kept = [p for p in self.state.intro_pool if p.created_dt() > cutoff]
+        removed = len(self.state.intro_pool) - len(kept)
+        if removed:
+            self.state.intro_pool = kept
+            self.save()
+            logger.info(
+                "保持期限(%d日)を過ぎた自己紹介をプールから削除: %d件",
+                self.settings.pool_max_age_days, removed,
+            )
+
+    def _pick_pool_item(self) -> PoolItem | None:
+        """再利用プールから1件選ぶ。使用回数が少ないもの、同数なら最後に使ったのが古いものを優先。"""
+        if not self.state.intro_pool:
+            return None
+        # last_used_at が None（未使用）は空文字扱いになり最優先で選ばれる
+        return min(self.state.intro_pool, key=lambda p: (p.used_count, p.last_used_at or ""))
 
     def _format_candidates(self) -> list[TopicFormat]:
         """次に使えるお題形式の候補を返す。将来はここで反応データによる重み付けを行う。"""
@@ -200,8 +245,6 @@ class IntroTopicBot(discord.Client):
         """投稿条件を満たさない場合、その理由を返す。満たすなら None。"""
         s = self.settings
         now = now_utc()
-        if not self.state.queue:
-            return "キューが空"
         hour = now.astimezone(JST).hour
         if not (s.post_window_start <= hour < s.post_window_end):
             return f"投稿時間帯外 ({hour}時 JST)"
@@ -239,7 +282,7 @@ class IntroTopicBot(discord.Client):
         return None
 
     def _pick_item(self) -> QueueItem | None:
-        """処理する自己紹介を選ぶ。新しいものを優先し、遅延時間未経過のものは除外する。"""
+        """処理する自己紹介を選ぶ。古いものから順に処理し、遅延時間未経過のものは除外する。"""
         now = now_utc()
         eligible = [
             item
@@ -248,7 +291,7 @@ class IntroTopicBot(discord.Client):
         ]
         if not eligible:
             return None
-        return max(eligible, key=lambda item: item.created_dt())
+        return min(eligible, key=lambda item: item.created_dt())
 
 
 def main() -> None:
