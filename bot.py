@@ -11,7 +11,7 @@ from typing import Literal
 import discord
 from discord.ext import tasks
 
-from config import STATE_PATH, Settings, load_settings
+from config import Settings, load_settings
 from store import (
     PendingMeasurement,
     PoolItem,
@@ -21,12 +21,20 @@ from store import (
     load_state,
     save_state,
 )
-from topic_generator import TOPIC_FORMATS, TopicFormat, TopicResult, generate_topic
+from topic_generator import (
+    TOPIC_FORMATS,
+    ReviewResult,
+    TopicFormat,
+    TopicResult,
+    generate_topic,
+)
 
 logger = logging.getLogger("intro_topic_bot")
 
 JST = timezone(timedelta(hours=9), name="JST")
 MAX_RETRIES = 3
+RETRY_BACKOFF_MINUTES = (5, 20, 60)  # 生成失敗が続いたときに次の試行まで空ける時間
+MANUAL_TRIGGER_COMMAND = "!topic now"  # オーナー専用の手動トリガー
 BACKFILL_LIMIT = 50
 RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直近お題の件数
 RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
@@ -64,6 +72,24 @@ def _reaction_score(stat: TopicStat) -> int:
     return stat.replies * REPLY_WEIGHT + stat.votes * VOTE_WEIGHT + stat.reactions
 
 
+def _review_label(review: ReviewResult | None) -> str:
+    if review is None:
+        return "未実施"
+    return "合格" if review.approved else "不合格"
+
+
+def _compose_text_body(result: TopicResult) -> str:
+    """通常投稿の本文。問いは太字にして目に留まりやすくする。"""
+    question = f"**{result.topic_question}**"
+    body = f"{result.lead_in}\n{question}" if result.lead_in else question
+    return f"💭 **お題**\n{body}"
+
+
+def _compose_poll_header(result: TopicResult) -> str:
+    """投票として投稿するときの本文。問いは投票側に入るので本文には入れない。"""
+    return f"💭 **お題**\n{result.lead_in}" if result.lead_in else "💭 **お題**"
+
+
 def _judge_refresh(
     message: discord.Message, optout_emoji: str, min_intro_length: int
 ) -> RefreshVerdict:
@@ -85,10 +111,10 @@ class IntroTopicBot(discord.Client):
         intents.message_content = True
         super().__init__(intents=intents)
         self.settings = settings
-        self.state: State = load_state(STATE_PATH)
+        self.state: State = load_state(settings.state_path)
 
     def save(self) -> None:
-        save_state(STATE_PATH, self.state)
+        save_state(self.settings.state_path, self.state)
 
     # --- イベント -----------------------------------------------------------
 
@@ -102,12 +128,32 @@ class IntroTopicBot(discord.Client):
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
+        # 手動トリガーは自己紹介・雑談どちらのチャンネルでも受け付ける。
+        # コマンド自体をキューや発言履歴に混ぜないよう、他の処理より先に return する
+        if self._is_manual_trigger(message):
+            logger.info("手動トリガーを受信: user_id=%s", message.author.id)
+            try:
+                await self._generate_and_post()
+            except Exception:
+                logger.exception("手動トリガーでの投稿に失敗")
+            else:
+                logger.info("手動トリガーの処理が完了")
+            return
         if message.channel.id == self.settings.chat_channel_id:
             self._record_chat_activity(message.created_at)
             return
         if message.channel.id != self.settings.intro_channel_id:
             return
         self._enqueue_intro(message)
+
+    def _is_manual_trigger(self, message: discord.Message) -> bool:
+        """オーナーが投稿タイミングを無視して1件出すためのコマンドか判定する。"""
+        owner_id = self.settings.owner_user_id
+        return (
+            owner_id != 0
+            and message.author.id == owner_id
+            and message.content.strip() == MANUAL_TRIGGER_COMMAND
+        )
 
     # --- 検知・補完 ---------------------------------------------------------
 
@@ -189,6 +235,10 @@ class IntroTopicBot(discord.Client):
         if reason is not None:
             logger.debug("投稿見送り: %s", reason)
             return
+        await self._generate_and_post()
+
+    async def _generate_and_post(self) -> None:
+        """候補を選んでお題を生成し投稿する。投稿条件の判定は呼び出し側で済ませておく。"""
         # 優先順位: 新規キュー → 再利用プール → 自己紹介を使わない汎用お題。
         # 生成直前に元メッセージを取り直し、破棄された候補はその周回のうちに次へ送る
         chosen: QueueItem | PoolItem | None = None
@@ -235,7 +285,20 @@ class IntroTopicBot(discord.Client):
                 logger.error("リトライ上限に達したため破棄: message_id=%s", item.message_id)
                 self.state.queue.remove(item)
                 self.state.processed_ids.append(item.message_id)
+            else:
+                # 失敗が続くほど間隔を空ける（API 障害中に無駄打ちしない）
+                minutes = RETRY_BACKOFF_MINUTES[
+                    min(item.retry_count - 1, len(RETRY_BACKOFF_MINUTES) - 1)
+                ]
+                item.next_retry_at = (now_utc() + timedelta(minutes=minutes)).isoformat()
+                logger.info(
+                    "次のリトライは%d分後: message_id=%s", minutes, item.message_id
+                )
             self.save()
+            return
+
+        if self.settings.dry_run:
+            await self._report_dry_run(source, result, review)
             return
 
         channel = self.get_channel(self.settings.chat_channel_id)
@@ -278,12 +341,57 @@ class IntroTopicBot(discord.Client):
             -RECENT_TOPICS_KEPT:
         ]
         self.save()
-        review_label = "未実施" if review is None else ("合格" if review.approved else "不合格")
+        review_label = _review_label(review)
         logger.info(
             "話題を投稿 (種別=%s, message_id=%s, 形式=%s, 検索使用=%s, 審査=%s): %s",
             source, source_id, result.format, result.used_search, review_label,
             result.topic_question,
         )
+        summary = (
+            f"お題を投稿しました (種別={source}, 形式={result.format}, 審査={review_label})\n"
+            f"{result.topic_question}"
+        )
+        if review is not None and not review.approved:
+            summary += f"\n審査不合格のまま採用: {review.reason}"
+        await self._log_to_channel(summary)
+
+    async def _report_dry_run(
+        self, source: str, result: TopicResult, review: ReviewResult | None
+    ) -> None:
+        """DRY_RUN: 投稿予定の内容を出すだけで state は一切変更しない。"""
+        as_poll = (
+            self.settings.use_poll
+            and result.format == "choice"
+            and _valid_poll_options(result.poll_options)
+        )
+        lines = [
+            f"[DRY_RUN] 投稿予定 (種別={source}, 形式={result.format}, "
+            f"審査={_review_label(review)})",
+            _compose_poll_header(result) if as_poll else _compose_text_body(result),
+        ]
+        if as_poll:
+            lines.append(f"投票: {result.topic_question}")
+            lines.append("選択肢: " + " / ".join(result.poll_options or []))
+        if review is not None and not review.approved:
+            lines.append(f"審査コメント: {review.reason}")
+        text = "\n".join(lines)
+        logger.info("DRY_RUN のため投稿せず: %s", text)
+        await self._log_to_channel(text)
+
+    async def _log_to_channel(self, text: str) -> None:
+        """運用ログをチャンネルに流す。ログ機能の失敗で本体を止めない。"""
+        if not self.settings.log_channel_id:
+            return
+        channel = self.get_channel(self.settings.log_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            logger.warning(
+                "ログチャンネルが見つかりません: %s", self.settings.log_channel_id
+            )
+            return
+        try:
+            await channel.send(text)
+        except discord.HTTPException as exc:
+            logger.warning("ログチャンネルへの送信に失敗: %s", exc)
 
     async def _send_topic(
         self, channel: discord.TextChannel, result: TopicResult
@@ -301,16 +409,12 @@ class IntroTopicBot(discord.Client):
                 )
                 for option in result.poll_options or []:
                     poll.add_answer(text=option)
-                # 問いは投票側に入るので本文には入れない
-                header = f"💭 **お題**\n{result.lead_in}" if result.lead_in else "💭 **お題**"
-                return await channel.send(header, poll=poll), True
+                return await channel.send(_compose_poll_header(result), poll=poll), True
             logger.info(
                 "二択型だが選択肢が投票に使えないため通常投稿にする: %s", result.poll_options
             )
 
-        question = f"**{result.topic_question}**"
-        body = f"{result.lead_in}\n{question}" if result.lead_in else question
-        return await channel.send(f"💭 **お題**\n{body}"), False
+        return await channel.send(_compose_text_body(result)), False
 
     async def _measure_pending(self) -> None:
         """投稿から一定時間が経ったお題の反応（返信・リアクション・投票）を集計する。"""
@@ -502,12 +606,16 @@ class IntroTopicBot(discord.Client):
         return None
 
     def _pick_item(self) -> QueueItem | None:
-        """処理する自己紹介を選ぶ。古いものから順に処理し、遅延時間未経過のものは除外する。"""
+        """処理する自己紹介を選ぶ。古いものから順に処理し、遅延時間未経過のものは除外する。
+
+        生成に失敗してバックオフ中（next_retry_at が未来）のものも対象外にする。
+        """
         now = now_utc()
         eligible = [
             item
             for item in self.state.queue
             if now - item.created_dt() >= timedelta(minutes=self.settings.min_delay_minutes)
+            and (item.next_retry_at is None or datetime.fromisoformat(item.next_retry_at) <= now)
         ]
         if not eligible:
             return None

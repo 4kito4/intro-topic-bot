@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 PROJECT_DIR = Path(__file__).resolve().parent
-STATE_PATH = PROJECT_DIR / "state.json"
+DEFAULT_STATE_PATH = PROJECT_DIR / "state.json"
 DEFAULT_OPTOUT_EMOJI = "🚫"
 FALSE_VALUES = ("false", "0", "no")
 
@@ -34,6 +34,10 @@ class Settings:
     optout_emoji: str
     use_poll: bool
     measure_after_hours: int
+    dry_run: bool
+    log_channel_id: int
+    owner_user_id: int
+    state_path: Path
 
 
 def _require(name: str) -> str:
@@ -83,6 +87,10 @@ def load_settings() -> Settings:
         optout_emoji=os.environ.get("OPTOUT_EMOJI", "").strip() or DEFAULT_OPTOUT_EMOJI,
         use_poll=_require_bool("USE_POLL", True),
         measure_after_hours=_require_int("MEASURE_AFTER_HOURS", 6),
+        dry_run=_require_bool("DRY_RUN", False),
+        log_channel_id=_require_int("LOG_CHANNEL_ID", 0),
+        owner_user_id=_require_int("OWNER_USER_ID", 0),
+        state_path=Path(os.environ.get("STATE_PATH", "").strip() or DEFAULT_STATE_PATH),
     )
 
 

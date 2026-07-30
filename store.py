@@ -17,6 +17,7 @@ class QueueItem:
     content: str
     created_at: str  # ISO 8601 (aware)
     retry_count: int = 0
+    next_retry_at: str | None = None  # 生成失敗時のバックオフ (ISO 8601, aware)
 
     def created_dt(self) -> datetime:
         return datetime.fromisoformat(self.created_at)
