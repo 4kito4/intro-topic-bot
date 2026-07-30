@@ -44,6 +44,7 @@ class TopicResult(BaseModel):
     topic_question: str
     used_search: bool
     format: TopicFormat
+    poll_options: list[str] | None = None  # choice 形式のときだけ投票の選択肢が入る
 
 
 class ReviewResult(BaseModel):

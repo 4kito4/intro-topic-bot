@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 PROJECT_DIR = Path(__file__).resolve().parent
 STATE_PATH = PROJECT_DIR / "state.json"
 DEFAULT_OPTOUT_EMOJI = "🚫"
+FALSE_VALUES = ("false", "0", "no")
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,8 @@ class Settings:
     min_intro_length: int
     pool_max_age_days: int
     optout_emoji: str
+    use_poll: bool
+    measure_after_hours: int
 
 
 def _require(name: str) -> str:
@@ -52,6 +55,13 @@ def _require_int(name: str, default: int | None = None) -> int:
         raise RuntimeError(f"{name} は整数で指定してください: {raw!r}") from None
 
 
+def _require_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in FALSE_VALUES
+
+
 def load_settings() -> Settings:
     load_dotenv(PROJECT_DIR / ".env")
     return Settings(
@@ -71,6 +81,8 @@ def load_settings() -> Settings:
         min_intro_length=_require_int("MIN_INTRO_LENGTH", 50),
         pool_max_age_days=_require_int("POOL_MAX_AGE_DAYS", 90),
         optout_emoji=os.environ.get("OPTOUT_EMOJI", "").strip() or DEFAULT_OPTOUT_EMOJI,
+        use_poll=_require_bool("USE_POLL", True),
+        measure_after_hours=_require_int("MEASURE_AFTER_HOURS", 6),
     )
 
 

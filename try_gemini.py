@@ -60,10 +60,12 @@ def show(
         verdict = "合格" if review.approved else f"不合格 ({', '.join(review.failed_criteria)})"
         print(f"審査: {verdict} — {review.reason}")
     print("--- 投稿イメージ ---")
-    print("💭 お題")
+    print("💭 **お題**")
     if result.lead_in:
         print(result.lead_in)
-    print(result.topic_question)
+    print(f"**{result.topic_question}**")
+    if result.poll_options:
+        print(f"投票の選択肢: {' / '.join(result.poll_options)}")
 
 
 def main() -> None:

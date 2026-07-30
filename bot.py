@@ -12,8 +12,16 @@ import discord
 from discord.ext import tasks
 
 from config import STATE_PATH, Settings, load_settings
-from store import PoolItem, QueueItem, State, load_state, save_state
-from topic_generator import TOPIC_FORMATS, TopicFormat, generate_topic
+from store import (
+    PendingMeasurement,
+    PoolItem,
+    QueueItem,
+    State,
+    TopicStat,
+    load_state,
+    save_state,
+)
+from topic_generator import TOPIC_FORMATS, TopicFormat, TopicResult, generate_topic
 
 logger = logging.getLogger("intro_topic_bot")
 
@@ -23,6 +31,18 @@ BACKFILL_LIMIT = 50
 RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直近お題の件数
 RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
 
+# Discord の投票の制約（question 300 文字 / answer 55 文字 / 選択肢は最大10件）
+POLL_DURATION = timedelta(hours=48)
+POLL_QUESTION_MAX_LEN = 300
+POLL_OPTION_MAX_LEN = 55
+POLL_MIN_OPTIONS = 2
+POLL_MAX_OPTIONS = 4
+
+MEASURE_HISTORY_LIMIT = 100  # 返信数を数えるときに遡る雑談チャンネルの件数
+TOPIC_STATS_KEPT = 30  # 反応の計測結果を保持する件数
+GOOD_EXAMPLES_KEPT = 3  # few-shot として生成プロンプトに渡すお題の件数
+REPLY_WEIGHT = 3  # 返信は最も価値の高い反応
+VOTE_WEIGHT = 2  # 次に投票、リアクションは 1
 
 RefreshVerdict = Literal["ok", "optout", "too_short"]
 RefreshOutcome = Literal["ok", "discarded", "skip"]
@@ -30,6 +50,18 @@ RefreshOutcome = Literal["ok", "discarded", "skip"]
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _valid_poll_options(options: list[str] | None) -> bool:
+    """Discord の投票に使える選択肢か判定する（2〜4件、空文字なし、各55文字以内）。"""
+    if options is None or not (POLL_MIN_OPTIONS <= len(options) <= POLL_MAX_OPTIONS):
+        return False
+    return all(bool(o.strip()) and len(o) <= POLL_OPTION_MAX_LEN for o in options)
+
+
+def _reaction_score(stat: TopicStat) -> int:
+    """お題の反応の強さ。会話が続いた返信を最も高く評価する。"""
+    return stat.replies * REPLY_WEIGHT + stat.votes * VOTE_WEIGHT + stat.reactions
 
 
 def _judge_refresh(
@@ -152,6 +184,7 @@ class IntroTopicBot(discord.Client):
 
     async def _post_worker_body(self) -> None:
         self._prune_expired_pool()
+        await self._measure_pending()
         reason = self._blocked_reason()
         if reason is not None:
             logger.debug("投稿見送り: %s", reason)
@@ -186,6 +219,7 @@ class IntroTopicBot(discord.Client):
                 self.settings.gemini_model,
                 self.state.posted_topics[-RECENT_TOPICS_KEPT:],
                 required_format,
+                self._good_examples(),
             )
         except Exception:
             if item is None:
@@ -207,10 +241,18 @@ class IntroTopicBot(discord.Client):
         channel = self.get_channel(self.settings.chat_channel_id)
         if not isinstance(channel, discord.TextChannel):
             raise RuntimeError(f"雑談チャンネルが見つかりません: {self.settings.chat_channel_id}")
-        body = f"{result.lead_in}\n{result.topic_question}" if result.lead_in else result.topic_question
-        await channel.send(f"💭 **お題**\n{body}")
+        posted, is_poll = await self._send_topic(channel, result)
 
         now = now_utc()
+        self.state.pending_measurements.append(
+            PendingMeasurement(
+                message_id=posted.id,
+                topic=result.topic_question,
+                format=result.format,
+                posted_at=now.isoformat(),
+                is_poll=is_poll,
+            )
+        )
         if item is not None:
             self.state.queue.remove(item)
             self.state.processed_ids.append(item.message_id)
@@ -242,6 +284,101 @@ class IntroTopicBot(discord.Client):
             source, source_id, result.format, result.used_search, review_label,
             result.topic_question,
         )
+
+    async def _send_topic(
+        self, channel: discord.TextChannel, result: TopicResult
+    ) -> tuple[discord.Message, bool]:
+        """お題を投稿する。二択型で選択肢が妥当なら Discord の投票にする。
+
+        戻り値: (投稿したメッセージ, 投票として投稿したか)
+        """
+        if self.settings.use_poll and result.format == "choice":
+            if _valid_poll_options(result.poll_options):
+                poll = discord.Poll(
+                    question=result.topic_question[:POLL_QUESTION_MAX_LEN],
+                    duration=POLL_DURATION,
+                    multiple=False,
+                )
+                for option in result.poll_options or []:
+                    poll.add_answer(text=option)
+                # 問いは投票側に入るので本文には入れない
+                header = f"💭 **お題**\n{result.lead_in}" if result.lead_in else "💭 **お題**"
+                return await channel.send(header, poll=poll), True
+            logger.info(
+                "二択型だが選択肢が投票に使えないため通常投稿にする: %s", result.poll_options
+            )
+
+        question = f"**{result.topic_question}**"
+        body = f"{result.lead_in}\n{question}" if result.lead_in else question
+        return await channel.send(f"💭 **お題**\n{body}"), False
+
+    async def _measure_pending(self) -> None:
+        """投稿から一定時間が経ったお題の反応（返信・リアクション・投票）を集計する。"""
+        now = now_utc()
+        due = [
+            p
+            for p in self.state.pending_measurements
+            if now - datetime.fromisoformat(p.posted_at)
+            >= timedelta(hours=self.settings.measure_after_hours)
+        ]
+        if not due:
+            return
+        channel = self.get_channel(self.settings.chat_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            raise RuntimeError(f"雑談チャンネルが見つかりません: {self.settings.chat_channel_id}")
+        changed = False
+        for pending in due:
+            try:
+                message = await channel.fetch_message(pending.message_id)
+            except discord.NotFound:
+                logger.info("計測対象のお題が削除済み: message_id=%s", pending.message_id)
+                self.state.pending_measurements.remove(pending)
+                changed = True
+                continue
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning(
+                    "お題の反応を取得できないため次周回に持ち越し: message_id=%s (%s)",
+                    pending.message_id, exc,
+                )
+                continue
+
+            replies = 0
+            async for posted in channel.history(
+                after=datetime.fromisoformat(pending.posted_at), limit=MEASURE_HISTORY_LIMIT
+            ):
+                reference = posted.reference
+                if reference is not None and reference.message_id == pending.message_id:
+                    replies += 1
+            reactions = sum(r.count for r in message.reactions)
+            votes = message.poll.total_votes if message.poll is not None else 0
+
+            self.state.topic_stats.append(
+                TopicStat(
+                    topic=pending.topic,
+                    format=pending.format,
+                    replies=replies,
+                    reactions=reactions,
+                    votes=votes,
+                    measured_at=now.isoformat(),
+                )
+            )
+            self.state.pending_measurements.remove(pending)
+            changed = True
+            logger.info(
+                "お題の反応を計測 (message_id=%s, 返信=%d, リアクション=%d, 投票=%d): %s",
+                pending.message_id, replies, reactions, votes, pending.topic,
+            )
+        if changed:
+            self.state.topic_stats = self.state.topic_stats[-TOPIC_STATS_KEPT:]
+            self.save()
+
+    def _good_examples(self) -> list[str]:
+        """反応が良かったお題を few-shot 用に返す（スコア上位3件。反応ゼロは除く）。"""
+        scored = [(_reaction_score(s), s.topic) for s in self.state.topic_stats]
+        ranked = sorted(
+            (pair for pair in scored if pair[0] > 0), key=lambda pair: pair[0], reverse=True
+        )
+        return [topic for _, topic in ranked[:GOOD_EXAMPLES_KEPT]]
 
     async def _refresh_source(self, source: QueueItem | PoolItem) -> RefreshOutcome:
         """生成直前に元メッセージを1件だけ取り直し、削除・編集・オプトアウトに追随する。

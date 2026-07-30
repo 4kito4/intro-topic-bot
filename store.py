@@ -37,6 +37,29 @@ class PoolItem:
 
 
 @dataclass
+class PendingMeasurement:
+    """投稿済みで、まだ反応を集計していないお題。"""
+
+    message_id: int
+    topic: str
+    format: str
+    posted_at: str  # ISO 8601 (aware)
+    is_poll: bool = False
+
+
+@dataclass
+class TopicStat:
+    """集計済みのお題の反応。few-shot に還元する。"""
+
+    topic: str
+    format: str
+    replies: int
+    reactions: int
+    votes: int
+    measured_at: str  # ISO 8601 (aware)
+
+
+@dataclass
 class State:
     processed_ids: list[int] = field(default_factory=list)
     queue: list[QueueItem] = field(default_factory=list)
@@ -46,6 +69,9 @@ class State:
     posted_topics: list[str] = field(default_factory=list)  # 投稿済みお題（多様性確保用、直近分）
     posted_formats: list[str] = field(default_factory=list)  # 投稿済みお題の形式（ローテーション用）
     intro_pool: list[PoolItem] = field(default_factory=list)  # 使用済み自己紹介の再利用プール
+    # 反応の計測待ち / 計測済み（few-shot への還元用）
+    pending_measurements: list[PendingMeasurement] = field(default_factory=list)
+    topic_stats: list[TopicStat] = field(default_factory=list)
 
     def is_processed(self, message_id: int) -> bool:
         return message_id in self.processed_ids or any(
@@ -70,6 +96,10 @@ def load_state(path: Path) -> State:
         posted_topics=raw.get("posted_topics", []),
         posted_formats=raw.get("posted_formats", []),
         intro_pool=[PoolItem(**item) for item in raw.get("intro_pool", [])],
+        pending_measurements=[
+            PendingMeasurement(**item) for item in raw.get("pending_measurements", [])
+        ],
+        topic_stats=[TopicStat(**item) for item in raw.get("topic_stats", [])],
     )
 
 
