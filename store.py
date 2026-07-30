@@ -30,6 +30,7 @@ class State:
     last_seen_at: str | None = None
     chat_activity: list[str] = field(default_factory=list)  # 雑談の直近発言時刻 (ISO)
     posted_topics: list[str] = field(default_factory=list)  # 投稿済みお題（多様性確保用、直近分）
+    posted_formats: list[str] = field(default_factory=list)  # 投稿済みお題の形式（ローテーション用）
 
     def is_processed(self, message_id: int) -> bool:
         return message_id in self.processed_ids or any(
@@ -52,6 +53,7 @@ def load_state(path: Path) -> State:
         last_seen_at=raw.get("last_seen_at"),
         chat_activity=chat_activity,
         posted_topics=raw.get("posted_topics", []),
+        posted_formats=raw.get("posted_formats", []),
     )
 
 

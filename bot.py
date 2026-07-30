@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -11,7 +12,7 @@ from discord.ext import tasks
 
 from config import STATE_PATH, Settings, load_settings
 from store import QueueItem, State, load_state, save_state
-from topic_generator import generate_topic
+from topic_generator import TOPIC_FORMATS, TopicFormat, generate_topic
 
 logger = logging.getLogger("intro_topic_bot")
 
@@ -19,6 +20,7 @@ JST = timezone(timedelta(hours=9), name="JST")
 MAX_RETRIES = 3
 BACKFILL_LIMIT = 50
 RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直近お題の件数
+RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
 
 
 def now_utc() -> datetime:
@@ -137,13 +139,15 @@ class IntroTopicBot(discord.Client):
         if item is None:
             logger.debug("投稿見送り: 遅延時間を満たす自己紹介がない")
             return
+        required_format = self._pick_format()
         try:
-            result = await asyncio.to_thread(
+            result, review = await asyncio.to_thread(
                 generate_topic,
                 item.content,
                 self.settings.gemini_api_key,
                 self.settings.gemini_model,
                 self.state.posted_topics[-RECENT_TOPICS_KEPT:],
+                required_format,
             )
         except Exception:
             item.retry_count += 1
@@ -170,11 +174,27 @@ class IntroTopicBot(discord.Client):
         self.state.posted_topics = (self.state.posted_topics + [result.topic_question])[
             -RECENT_TOPICS_KEPT:
         ]
+        # ローテーションは実際に投稿された形式を基準にする（申告形式を採用）
+        self.state.posted_formats = (self.state.posted_formats + [result.format])[
+            -RECENT_TOPICS_KEPT:
+        ]
         self.save()
+        review_label = "未実施" if review is None else ("合格" if review.approved else "不合格")
         logger.info(
-            "話題を投稿 (message_id=%s, 検索使用=%s): %s",
-            item.message_id, result.used_search, result.topic_question,
+            "話題を投稿 (message_id=%s, 形式=%s, 検索使用=%s, 審査=%s): %s",
+            item.message_id, result.format, result.used_search, review_label,
+            result.topic_question,
         )
+
+    def _format_candidates(self) -> list[TopicFormat]:
+        """次に使えるお題形式の候補を返す。将来はここで反応データによる重み付けを行う。"""
+        recent = self.state.posted_formats[-RECENT_FORMATS_AVOIDED:]
+        candidates = [f for f in TOPIC_FORMATS if f not in recent]
+        return candidates or list(TOPIC_FORMATS)
+
+    def _pick_format(self) -> TopicFormat:
+        """直近に使った形式を避けてお題形式を選ぶ。"""
+        return random.choice(self._format_candidates())
 
     def _blocked_reason(self) -> str | None:
         """投稿条件を満たさない場合、その理由を返す。満たすなら None。"""

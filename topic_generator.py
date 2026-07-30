@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from typing import Literal, get_args
 
 from google import genai
 from google.genai import types
@@ -10,83 +12,92 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+TopicFormat = Literal["choice", "experience", "values", "aruaru", "hypothetical"]
+TOPIC_FORMATS: tuple[TopicFormat, ...] = get_args(TopicFormat)
+FORMAT_LABELS: dict[TopicFormat, str] = {
+    "choice": "二択対立型",
+    "experience": "経験共有型",
+    "values": "価値観型",
+    "aruaru": "あるある型",
+    "hypothetical": "仮定型",
+}
+
+MAX_REGENERATE = 1  # 審査で不合格だったときに作り直す回数
+
+PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+def _load_prompt(name: str) -> str:
+    path = PROMPTS_DIR / name
+    if not path.exists():
+        raise RuntimeError(f"プロンプトファイルが見つかりません: {path}")
+    return path.read_text(encoding="utf-8").strip()
+
+
+SYSTEM_INSTRUCTION = _load_prompt("system.md")
+JUDGE_INSTRUCTION = _load_prompt("judge.md")
+
 
 class TopicResult(BaseModel):
     extracted_interests: list[str]
     lead_in: str
     topic_question: str
     used_search: bool
+    format: TopicFormat
 
 
-SYSTEM_INSTRUCTION = """\
-あなたは学生コミュニティの Discord サーバーで、雑談チャンネルに定期的にお題を投下する bot の中身です。
-表向きは「ただの定期お題 bot」ですが、実際にはメンバーの自己紹介文を参考に、
-その人が話しやすそうなお題を選んでいます。**この仕組みは絶対に悟らせないでください。**
-
-# 出力の構成
-- lead_in: お題の導入1文（任意。不要なら空文字）。例:「最近、AIに任せられることがどんどん増えていますね。」
-- topic_question: 問いかけ1〜2文。lead_in と合わせて全体で3文以内。
-- extracted_interests: 自己紹介から抽出した専攻・興味・趣味のリスト（デバッグ用。投稿には使われない）。
-- used_search: Google 検索を使ったら true。
-
-# 秘匿ルール（最重要）
-1. 新しいメンバーの参加・自己紹介の存在に一切言及しない（「参加してくれました」「自己紹介にあった」等は禁止）
-2. 誰か特定の人に向けた文にしない。サーバー全員への一般的なお題として書く
-3. 自己紹介にある興味の組み合わせをそのまま反映しない。珍しい趣味の組み合わせ
-   （例: 哲学×競技プログラミング×茶道）を全部含む問いは本人に気づかれる。
-   **興味の中から1つの軸だけを選び**、その分野の一般的な問いにする
-
-# 問いの品質基準（4条件すべて満たすこと）
-1. 正解がない
-2. 専門知識がなくても、自分の経験や価値観から答えられる
-3. 専門用語を含まない
-4. Yes/No で終わらず、人によって意見が分かれる
-
-# 多様性ルール（似たり寄ったり防止・重要）
-毎回同じ形式の問いにしない。特に「もし〜だとしたら…と思いますか？」の仮定形を連発しない。
-以下の形式を意識的に使い分けること:
-- 二択対立型:「AとB、選ぶならどっち派？」
-- 経験共有型:「あなたが◯◯で一番△△だった瞬間は？」
-- 価値観型:「◯◯って結局何のためにあると思いますか？」
-- あるある型:「◯◯な人にしか伝わらない喜び・苦労は？」
-- 仮定型:「もし〜だとしたら？」（他の形式と同頻度まで）
-「最近投稿したお題」がプロンプトで渡された場合、それらと **テーマ・問いの形式・書き出し** の
-いずれも被らないようにする。直近のお題がAI関連ならAI以外の切り口を選ぶ。
-
-# 良い例
-- 専攻が哲学 →「記憶をすべて失っても、その人は同じ人だと思いますか？」
-- 専攻が哲学 →「幸せな人生と、意味のある人生は同じだと思いますか？」
-- 専攻が機械学習 →「AI を『友達』と呼べる日は来ると思いますか？」
-- 趣味が写真 →「みなさんの『これは撮っておいてよかった』と思う一枚はどんな写真ですか？」
-- 趣味が料理 →「手間をかけた自炊と、サッと済ませる外食、豊かなのはどっちだと思いますか？」
-
-# 悪い例
-- 「カントの定言命法についてどう思いますか？」（専門的すぎて専攻者しか答えられない）
-- 「哲学に興味がある新メンバーも来たので…」（自己紹介を見ていることがバレる。禁止）
-- 「好きな食べ物は何ですか？」（元ネタと無関係で浅い）
-- 直近のお題と同じ「もし〜たら」構文・同じAIテーマの繰り返し（多様性ルール違反）
-
-# Google 検索の使い方
-選んだ分野の最近の話題・ニュースが問いを面白くする場合のみ検索してよい。
-ニュースの固有名詞を問いに直接入れず、「最近◯◯が話題ですが…」程度の導入に留める。
-自己紹介だけで良い問いが作れるなら検索しなくてよい。
-
-# 禁止事項
-- 学校名・学年・本名・SNS アカウントなど個人を特定できる情報を抽出・言及しない
-
-# 文体
-日本語。フレンドリーだが馴れ馴れしくない。絵文字は多くても1個。\
-"""
+class ReviewResult(BaseModel):
+    approved: bool
+    failed_criteria: list[str]
+    reason: str
 
 
 def generate_topic(
-    intro_text: str, api_key: str, model: str, recent_topics: list[str] | None = None
-) -> TopicResult:
+    intro_text: str,
+    api_key: str,
+    model: str,
+    recent_topics: list[str] | None = None,
+    required_format: TopicFormat | None = None,
+    good_examples: list[str] | None = None,
+) -> tuple[TopicResult, ReviewResult | None]:
     """自己紹介文から話題を生成する。API 失敗時は例外を送出する（呼び出し側でリトライ管理）。
 
     recent_topics: 直近に投稿したお題。テーマ・形式の重複を避けるためにプロンプトへ渡す。
+    required_format: 今回書かせるお題の形式。None ならモデルに任せる。
+    good_examples: 実際に反応が良かったお題。few-shot としてプロンプトへ渡す。
+    戻り値: (生成結果, 審査結果)。審査自体が失敗した場合の審査結果は None。
     """
     client = genai.Client(api_key=api_key)
+    prompt = _build_prompt(intro_text, recent_topics, required_format, good_examples)
+
+    result = _generate(client, model, prompt)
+    review = _review_or_none(client, model, result, required_format)
+    for _ in range(MAX_REGENERATE):
+        if review is None or review.approved:
+            break
+        logger.info("審査で不合格のため作り直します: %s", review.reason)
+        result = _generate(client, model, prompt + _rejection_note(review))
+        review = _review_or_none(client, model, result, required_format)
+
+    if review is not None and not review.approved:
+        logger.warning(
+            "作り直し後も審査不合格だが、沈黙を避けるため採用: %s (%s)",
+            review.reason,
+            ", ".join(review.failed_criteria),
+        )
+    if required_format is not None and result.format != required_format:
+        logger.warning(
+            "指定形式と申告形式が不一致: 指定=%s 申告=%s", required_format, result.format
+        )
+    return result, review
+
+
+def _build_prompt(
+    intro_text: str,
+    recent_topics: list[str] | None,
+    required_format: TopicFormat | None,
+    good_examples: list[str] | None,
+) -> str:
     prompt = (
         "次の自己紹介文を参考に、サーバー全体向けのお題を作ってください。\n\n"
         f"---\n{intro_text}\n---"
@@ -96,7 +107,28 @@ def generate_topic(
         prompt += (
             "\n\n# 最近投稿したお題（テーマ・問いの形式・書き出しが被らないこと）\n" + listed
         )
+    if required_format is not None:
+        prompt += (
+            f"\n\n# 今回の指定形式\n今回は **{FORMAT_LABELS[required_format]}** で書くこと。"
+            f"format フィールドには `{required_format}` を入れる。"
+        )
+    if good_examples:
+        listed = "\n".join(f"- {t}" for t in good_examples)
+        prompt += (
+            "\n\n# 実際に反応が良かったお題の例（雰囲気の参考。丸写しはしないこと）\n" + listed
+        )
+    return prompt
 
+
+def _rejection_note(review: ReviewResult) -> str:
+    failed = "\n".join(f"- {c}" for c in review.failed_criteria) or "- （明示なし）"
+    return (
+        "\n\n# 直前の案が審査で不合格になった理由（同じ失敗を繰り返さないこと）\n"
+        f"{failed}\n- 講評: {review.reason}"
+    )
+
+
+def _generate(client: genai.Client, model: str, prompt: str) -> TopicResult:
     try:
         response = client.models.generate_content(
             model=model,
@@ -148,3 +180,50 @@ def _generate_two_step(client: genai.Client, model: str, prompt: str) -> TopicRe
     if isinstance(parsed, TopicResult):
         return parsed
     return TopicResult.model_validate_json(formatted.text or "")
+
+
+def _review_or_none(
+    client: genai.Client,
+    model: str,
+    result: TopicResult,
+    required_format: TopicFormat | None,
+) -> ReviewResult | None:
+    """審査を試みる。審査 API 自体が失敗した場合は投稿を優先して None を返す。"""
+    try:
+        return _review_topic(client, model, result, required_format)
+    except Exception as exc:  # noqa: BLE001 - 審査失敗で生成結果ごと捨てない
+        logger.warning("お題の審査に失敗したため審査なしで採用します: %s", exc)
+        return None
+
+
+def _review_topic(
+    client: genai.Client,
+    model: str,
+    result: TopicResult,
+    required_format: TopicFormat | None,
+) -> ReviewResult:
+    """生成したお題を LLM に自己批評させる（検索なしの軽い1コール）。"""
+    required_label = (
+        FORMAT_LABELS[required_format] if required_format is not None else "指定なし"
+    )
+    contents = (
+        "次のお題を判定軸に照らして審査してください。\n\n"
+        f"- lead_in: {result.lead_in}\n"
+        f"- topic_question: {result.topic_question}\n"
+        f"- 抽出された興味: {', '.join(result.extracted_interests)}\n"
+        f"- 指定形式: {required_label}\n"
+        f"- 申告形式: {FORMAT_LABELS[result.format]}"
+    )
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=JUDGE_INSTRUCTION,
+            response_mime_type="application/json",
+            response_schema=ReviewResult,
+        ),
+    )
+    parsed = response.parsed
+    if isinstance(parsed, ReviewResult):
+        return parsed
+    return ReviewResult.model_validate_json(response.text or "")

@@ -1,7 +1,7 @@
 """topic_generator を Discord なしで単体確認する CLI。
 
 使い方:
-    uv run python try_gemini.py            # 内蔵サンプル3件を実行
+    uv run python try_gemini.py            # 内蔵サンプルで5形式を1周
     uv run python try_gemini.py "自己紹介文"  # 任意テキストで実行
 """
 
@@ -11,7 +11,14 @@ import logging
 import sys
 
 from config import load_gemini_only_settings
-from topic_generator import TopicResult, generate_topic
+from topic_generator import (
+    FORMAT_LABELS,
+    TOPIC_FORMATS,
+    ReviewResult,
+    TopicFormat,
+    TopicResult,
+    generate_topic,
+)
 
 SAMPLES: list[tuple[str, str]] = [
     (
@@ -34,10 +41,24 @@ SAMPLES: list[tuple[str, str]] = [
 ]
 
 
-def show(label: str, result: TopicResult) -> None:
+def show(
+    label: str,
+    result: TopicResult,
+    review: ReviewResult | None,
+    required_format: TopicFormat | None = None,
+) -> None:
     print(f"\n=== {label} ===")
     print(f"抽出: {', '.join(result.extracted_interests)}")
+    required_label = (
+        FORMAT_LABELS[required_format] if required_format is not None else "指定なし"
+    )
+    print(f"指定形式: {required_label} / 申告形式: {FORMAT_LABELS[result.format]}")
     print(f"検索使用: {result.used_search}")
+    if review is None:
+        print("審査: 未実施（審査コールが失敗）")
+    else:
+        verdict = "合格" if review.approved else f"不合格 ({', '.join(review.failed_criteria)})"
+        print(f"審査: {verdict} — {review.reason}")
     print("--- 投稿イメージ ---")
     print("💭 お題")
     if result.lead_in:
@@ -46,19 +67,25 @@ def show(label: str, result: TopicResult) -> None:
 
 
 def main() -> None:
+    # LLM は cp932 にない文字（em-dash・絵文字等）を返すため、Windows コンソールでも
+    # UnicodeEncodeError で落ちないよう出力を UTF-8 にする
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     api_key, model = load_gemini_only_settings()
 
     if len(sys.argv) > 1:
         text = " ".join(sys.argv[1:])
-        show("自由入力", generate_topic(text, api_key, model))
+        result, review = generate_topic(text, api_key, model)
+        show("自由入力", result, review)
         return
 
-    # 前のお題を履歴として渡し、テーマ・形式が被らないことを確認する
+    # 5形式を1周する。サンプルは順番に使い回し、前のお題を履歴として渡して重複を確認する
     recent: list[str] = []
-    for label, text in SAMPLES:
-        result = generate_topic(text, api_key, model, recent)
-        show(label, result)
+    for i, required_format in enumerate(TOPIC_FORMATS):
+        label, text = SAMPLES[i % len(SAMPLES)]
+        result, review = generate_topic(text, api_key, model, recent, required_format)
+        show(f"{label} × {FORMAT_LABELS[required_format]}", result, review, required_format)
         recent.append(result.topic_question)
 
 
