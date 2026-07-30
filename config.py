@@ -21,9 +21,12 @@ class Settings:
     chat_channel_id: int
     min_delay_minutes: int
     quiet_minutes: int
-    cooldown_minutes: int
-    active_hour_start: int
-    active_hour_end: int
+    quiet_busy_minutes: int
+    activity_window_minutes: int
+    busy_threshold: int
+    post_interval_hours: int
+    post_window_start: int
+    post_window_end: int
     min_intro_length: int
 
 
@@ -51,14 +54,17 @@ def load_settings() -> Settings:
     return Settings(
         discord_token=_require("DISCORD_TOKEN"),
         gemini_api_key=_require("GEMINI_API_KEY"),
-        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3-flash").strip(),
+        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash").strip(),
         intro_channel_id=_require_int("INTRO_CHANNEL_ID"),
         chat_channel_id=_require_int("CHAT_CHANNEL_ID"),
         min_delay_minutes=_require_int("MIN_DELAY_MINUTES", 30),
         quiet_minutes=_require_int("QUIET_MINUTES", 15),
-        cooldown_minutes=_require_int("COOLDOWN_MINUTES", 180),
-        active_hour_start=_require_int("ACTIVE_HOUR_START", 9),
-        active_hour_end=_require_int("ACTIVE_HOUR_END", 23),
+        quiet_busy_minutes=_require_int("QUIET_BUSY_MINUTES", 45),
+        activity_window_minutes=_require_int("ACTIVITY_WINDOW_MINUTES", 60),
+        busy_threshold=_require_int("BUSY_THRESHOLD", 3),
+        post_interval_hours=_require_int("POST_INTERVAL_HOURS", 48),
+        post_window_start=_require_int("POST_WINDOW_START", 19),
+        post_window_end=_require_int("POST_WINDOW_END", 22),
         min_intro_length=_require_int("MIN_INTRO_LENGTH", 50),
     )
 
@@ -66,4 +72,4 @@ def load_settings() -> Settings:
 def load_gemini_only_settings() -> tuple[str, str]:
     """try_gemini.py 用: Discord 設定なしで API キーとモデル名だけ読む。"""
     load_dotenv(PROJECT_DIR / ".env")
-    return _require("GEMINI_API_KEY"), os.environ.get("GEMINI_MODEL", "gemini-3-flash").strip()
+    return _require("GEMINI_API_KEY"), os.environ.get("GEMINI_MODEL", "gemini-3.5-flash").strip()

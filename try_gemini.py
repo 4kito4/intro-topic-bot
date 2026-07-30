@@ -39,7 +39,9 @@ def show(label: str, result: TopicResult) -> None:
     print(f"抽出: {', '.join(result.extracted_interests)}")
     print(f"検索使用: {result.used_search}")
     print("--- 投稿イメージ ---")
-    print(result.intro_line)
+    print("💭 お題")
+    if result.lead_in:
+        print(result.lead_in)
     print(result.topic_question)
 
 
@@ -52,8 +54,12 @@ def main() -> None:
         show("自由入力", generate_topic(text, api_key, model))
         return
 
+    # 前のお題を履歴として渡し、テーマ・形式が被らないことを確認する
+    recent: list[str] = []
     for label, text in SAMPLES:
-        show(label, generate_topic(text, api_key, model))
+        result = generate_topic(text, api_key, model, recent)
+        show(label, result)
+        recent.append(result.topic_question)
 
 
 if __name__ == "__main__":

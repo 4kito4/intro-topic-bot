@@ -18,6 +18,7 @@ logger = logging.getLogger("intro_topic_bot")
 JST = timezone(timedelta(hours=9), name="JST")
 MAX_RETRIES = 3
 BACKFILL_LIMIT = 50
+RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直近お題の件数
 
 
 def now_utc() -> datetime:
@@ -48,8 +49,7 @@ class IntroTopicBot(discord.Client):
         if message.author.bot:
             return
         if message.channel.id == self.settings.chat_channel_id:
-            self.state.last_chat_activity = message.created_at.isoformat()
-            self.save()
+            self._record_chat_activity(message.created_at)
             return
         if message.channel.id != self.settings.intro_channel_id:
             return
@@ -99,14 +99,24 @@ class IntroTopicBot(discord.Client):
             logger.info("オフライン中の自己紹介を %d 件補完", count)
 
     async def _init_chat_activity(self) -> None:
-        if self.state.last_chat_activity is not None:
-            return
+        """Bot 停止中の雑談発言をウィンドウ分だけ履歴から取り直す。"""
         channel = self.get_channel(self.settings.chat_channel_id)
         if not isinstance(channel, discord.TextChannel):
             raise RuntimeError(f"雑談チャンネルが見つかりません: {self.settings.chat_channel_id}")
-        async for message in channel.history(limit=1):
-            self.state.last_chat_activity = message.created_at.isoformat()
-            self.save()
+        window_start = now_utc() - timedelta(minutes=self.settings.activity_window_minutes)
+        self.state.chat_activity = []
+        async for message in channel.history(limit=100, after=window_start, oldest_first=True):
+            if not message.author.bot:
+                self.state.chat_activity.append(message.created_at.isoformat())
+        self.save()
+
+    def _record_chat_activity(self, at: datetime) -> None:
+        cutoff = at - timedelta(minutes=self.settings.activity_window_minutes)
+        self.state.chat_activity = [
+            t for t in self.state.chat_activity if datetime.fromisoformat(t) > cutoff
+        ]
+        self.state.chat_activity.append(at.isoformat())
+        self.save()
 
     # --- 投稿ワーカー -------------------------------------------------------
 
@@ -116,13 +126,17 @@ class IntroTopicBot(discord.Client):
         if reason is not None:
             logger.debug("投稿見送り: %s", reason)
             return
-        item = self.state.queue[0]
+        item = self._pick_item()
+        if item is None:
+            logger.debug("投稿見送り: 遅延時間を満たす自己紹介がない")
+            return
         try:
             result = await asyncio.to_thread(
                 generate_topic,
                 item.content,
                 self.settings.gemini_api_key,
                 self.settings.gemini_model,
+                self.state.posted_topics[-RECENT_TOPICS_KEPT:],
             )
         except Exception:
             item.retry_count += 1
@@ -132,7 +146,7 @@ class IntroTopicBot(discord.Client):
             )
             if item.retry_count >= MAX_RETRIES:
                 logger.error("リトライ上限に達したため破棄: message_id=%s", item.message_id)
-                self.state.queue.pop(0)
+                self.state.queue.remove(item)
                 self.state.processed_ids.append(item.message_id)
             self.save()
             return
@@ -140,11 +154,15 @@ class IntroTopicBot(discord.Client):
         channel = self.get_channel(self.settings.chat_channel_id)
         if not isinstance(channel, discord.TextChannel):
             raise RuntimeError(f"雑談チャンネルが見つかりません: {self.settings.chat_channel_id}")
-        await channel.send(f"{result.intro_line}\n{result.topic_question}")
+        body = f"{result.lead_in}\n{result.topic_question}" if result.lead_in else result.topic_question
+        await channel.send(f"💭 **お題**\n{body}")
 
-        self.state.queue.pop(0)
+        self.state.queue.remove(item)
         self.state.processed_ids.append(item.message_id)
         self.state.last_posted_at = now_utc().isoformat()
+        self.state.posted_topics = (self.state.posted_topics + [result.topic_question])[
+            -RECENT_TOPICS_KEPT:
+        ]
         self.save()
         logger.info(
             "話題を投稿 (message_id=%s, 検索使用=%s): %s",
@@ -158,20 +176,52 @@ class IntroTopicBot(discord.Client):
         if not self.state.queue:
             return "キューが空"
         hour = now.astimezone(JST).hour
-        if not (s.active_hour_start <= hour < s.active_hour_end):
-            return f"稼働時間外 ({hour}時 JST)"
-        item = self.state.queue[0]
-        if now - item.created_dt() < timedelta(minutes=s.min_delay_minutes):
-            return "自己紹介からの遅延時間が未経過"
-        if self.state.last_chat_activity is not None:
-            quiet_for = now - datetime.fromisoformat(self.state.last_chat_activity)
-            if quiet_for < timedelta(minutes=s.quiet_minutes):
-                return f"雑談チャンネルが活発 (最終発言から{int(quiet_for.total_seconds() // 60)}分)"
+        if not (s.post_window_start <= hour < s.post_window_end):
+            return f"投稿時間帯外 ({hour}時 JST)"
         if self.state.last_posted_at is not None:
             since_post = now - datetime.fromisoformat(self.state.last_posted_at)
-            if since_post < timedelta(minutes=s.cooldown_minutes):
-                return "クールダウン中"
+            if since_post < timedelta(hours=s.post_interval_hours):
+                return f"投稿間隔が未経過 (前回から{int(since_post.total_seconds() // 3600)}時間)"
+        return self._quiet_blocked_reason(now)
+
+    def _quiet_blocked_reason(self, now: datetime) -> str | None:
+        """Discord の会話ラグを考慮した静穏判定。
+
+        直近ウィンドウ内に一定数以上の発言があれば「会話中」とみなし、
+        返信ラグの可能性があるため長めの静穏時間を要求する。
+        発言がまばらなら短めの静穏時間で投稿してよい。
+        """
+        s = self.settings
+        window = timedelta(minutes=s.activity_window_minutes)
+        recent = [
+            t
+            for t in (datetime.fromisoformat(x) for x in self.state.chat_activity)
+            if now - t <= window
+        ]
+        if not recent:
+            return None
+        quiet_for = now - max(recent)
+        busy = len(recent) >= s.busy_threshold
+        required = s.quiet_busy_minutes if busy else s.quiet_minutes
+        if quiet_for < timedelta(minutes=required):
+            mode = "会話中" if busy else "まばら"
+            return (
+                f"雑談チャンネルが静穏待ち ({mode}: 直近{s.activity_window_minutes}分に{len(recent)}件, "
+                f"最終発言から{int(quiet_for.total_seconds() // 60)}分 < 必要{required}分)"
+            )
         return None
+
+    def _pick_item(self) -> QueueItem | None:
+        """処理する自己紹介を選ぶ。新しいものを優先し、遅延時間未経過のものは除外する。"""
+        now = now_utc()
+        eligible = [
+            item
+            for item in self.state.queue
+            if now - item.created_dt() >= timedelta(minutes=self.settings.min_delay_minutes)
+        ]
+        if not eligible:
+            return None
+        return max(eligible, key=lambda item: item.created_dt())
 
 
 def main() -> None:

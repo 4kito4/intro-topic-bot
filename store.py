@@ -28,7 +28,8 @@ class State:
     queue: list[QueueItem] = field(default_factory=list)
     last_posted_at: str | None = None
     last_seen_at: str | None = None
-    last_chat_activity: str | None = None
+    chat_activity: list[str] = field(default_factory=list)  # 雑談の直近発言時刻 (ISO)
+    posted_topics: list[str] = field(default_factory=list)  # 投稿済みお題（多様性確保用、直近分）
 
     def is_processed(self, message_id: int) -> bool:
         return message_id in self.processed_ids or any(
@@ -40,12 +41,17 @@ def load_state(path: Path) -> State:
     if not path.exists():
         return State()
     raw = json.loads(path.read_text(encoding="utf-8"))
+    chat_activity = raw.get("chat_activity", [])
+    # 旧形式 (last_chat_activity: str) からの移行
+    if not chat_activity and raw.get("last_chat_activity"):
+        chat_activity = [raw["last_chat_activity"]]
     return State(
         processed_ids=raw.get("processed_ids", []),
         queue=[QueueItem(**item) for item in raw.get("queue", [])],
         last_posted_at=raw.get("last_posted_at"),
         last_seen_at=raw.get("last_seen_at"),
-        last_chat_activity=raw.get("last_chat_activity"),
+        chat_activity=chat_activity,
+        posted_topics=raw.get("posted_topics", []),
     )
 
 
