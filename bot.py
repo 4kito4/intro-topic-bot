@@ -47,7 +47,7 @@ POLL_MIN_OPTIONS = 2
 POLL_MAX_OPTIONS = 4
 
 MEASURE_HISTORY_LIMIT = 100  # 返信数を数えるときに遡る雑談チャンネルの件数
-TOPIC_STATS_KEPT = 30  # 反応の計測結果を保持する件数
+TOPIC_STATS_KEPT = 60  # 反応の計測結果を保持する件数（1お題あたり最大2行のため保持お題数は従来同等）
 GOOD_EXAMPLES_KEPT = 3  # few-shot として生成プロンプトに渡すお題の件数
 REPLY_WEIGHT = 3  # 返信は最も価値の高い反応
 VOTE_WEIGHT = 2  # 次に投票、リアクションは 1
@@ -88,6 +88,32 @@ def _compose_text_body(result: TopicResult) -> str:
 def _compose_poll_header(result: TopicResult) -> str:
     """投票として投稿するときの本文。問いは投票側に入るので本文には入れない。"""
     return f"💭 **お題**\n{result.lead_in}" if result.lead_in else "💭 **お題**"
+
+
+def _measure_checkpoints(settings: Settings) -> tuple[int, ...]:
+    """反応を計測する時点（投稿からの経過時間）。MEASURE_FINAL_AFTER_HOURS が 0 なら1点計測。"""
+    if settings.measure_final_after_hours <= 0:
+        return (settings.measure_after_hours,)
+    return (settings.measure_after_hours, settings.measure_final_after_hours)
+
+
+def _due_checkpoint_hours(
+    pending: PendingMeasurement, now: datetime, checkpoints: tuple[int, ...]
+) -> int | None:
+    """次に計測すべき時点を返す。まだ来ていない / 全て計測済みなら None。"""
+    if pending.measured_count >= len(checkpoints):
+        return None
+    hours = checkpoints[pending.measured_count]
+    elapsed = now - datetime.fromisoformat(pending.posted_at)
+    return hours if elapsed >= timedelta(hours=hours) else None
+
+
+def _is_measure_given_up(
+    pending: PendingMeasurement, now: datetime, checkpoints: tuple[int, ...], giveup_hours: int
+) -> bool:
+    """最終計測時点から猶予を過ぎたか。取得失敗が続く pending を無限リトライさせない。"""
+    elapsed = now - datetime.fromisoformat(pending.posted_at)
+    return elapsed > timedelta(hours=checkpoints[-1] + giveup_hours)
 
 
 def _judge_refresh(
@@ -416,22 +442,56 @@ class IntroTopicBot(discord.Client):
 
         return await channel.send(_compose_text_body(result)), False
 
+    async def _thread_replies(self, message: discord.Message) -> int:
+        """お題に立ったスレッドの発言数。Bot はスレッドに投稿しないので全件を返信として数える。
+
+        message_count は削除を減算しない概算だが、ランキング用のシグナルとしては十分。
+        取得できなければ 0 として計測自体は成立させる。
+        """
+        thread = message.thread
+        if thread is None:
+            if not message.flags.has_thread:
+                return 0
+            # アーカイブ済みだと message.thread が None になる（スレッド ID = 元メッセージ ID）
+            try:
+                fetched = await self.fetch_channel(message.id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning(
+                    "スレッドを取得できないため返信0として計測: message_id=%s (%s)",
+                    message.id, exc,
+                )
+                return 0
+            if not isinstance(fetched, discord.Thread):
+                return 0
+            thread = fetched
+        return thread.message_count or 0
+
     async def _measure_pending(self) -> None:
-        """投稿から一定時間が経ったお題の反応（返信・リアクション・投票）を集計する。"""
+        """投稿から一定時間が経ったお題の反応（返信・リアクション・投票）を集計する。
+
+        1つのお題を checkpoints の回数だけ計測し、そのつど at_hours 付きの行を追記する。
+        """
         now = now_utc()
-        due = [
-            p
-            for p in self.state.pending_measurements
-            if now - datetime.fromisoformat(p.posted_at)
-            >= timedelta(hours=self.settings.measure_after_hours)
-        ]
+        checkpoints = _measure_checkpoints(self.settings)
+        changed = False
+        due: list[tuple[PendingMeasurement, int]] = []
+        for pending in list(self.state.pending_measurements):
+            if pending.measured_count >= len(checkpoints):
+                # 運用中に MEASURE_FINAL_AFTER_HOURS を 0 へ戻した場合もここで完了扱いになる
+                self.state.pending_measurements.remove(pending)
+                changed = True
+                continue
+            at_hours = _due_checkpoint_hours(pending, now, checkpoints)
+            if at_hours is not None:
+                due.append((pending, at_hours))
         if not due:
+            if changed:
+                self.save()
             return
         channel = self.get_channel(self.settings.chat_channel_id)
         if not isinstance(channel, discord.TextChannel):
             raise RuntimeError(f"雑談チャンネルが見つかりません: {self.settings.chat_channel_id}")
-        changed = False
-        for pending in due:
+        for pending, at_hours in due:
             try:
                 message = await channel.fetch_message(pending.message_id)
             except discord.NotFound:
@@ -440,6 +500,20 @@ class IntroTopicBot(discord.Client):
                 changed = True
                 continue
             except (discord.Forbidden, discord.HTTPException) as exc:
+                if _is_measure_given_up(
+                    pending, now, checkpoints, self.settings.measure_giveup_hours
+                ):
+                    logger.warning(
+                        "計測できないまま猶予(%d時間)を過ぎたため破棄: message_id=%s (%s)",
+                        self.settings.measure_giveup_hours, pending.message_id, exc,
+                    )
+                    self.state.pending_measurements.remove(pending)
+                    changed = True
+                    await self._log_to_channel(
+                        f"お題の反応を計測できないまま猶予を過ぎたため計測を諦めました "
+                        f"(message_id={pending.message_id}): {pending.topic}"
+                    )
+                    continue
                 logger.warning(
                     "お題の反応を取得できないため次周回に持ち越し: message_id=%s (%s)",
                     pending.message_id, exc,
@@ -453,6 +527,7 @@ class IntroTopicBot(discord.Client):
                 reference = posted.reference
                 if reference is not None and reference.message_id == pending.message_id:
                     replies += 1
+            replies += await self._thread_replies(message)
             reactions = sum(r.count for r in message.reactions)
             votes = message.poll.total_votes if message.poll is not None else 0
 
@@ -464,21 +539,31 @@ class IntroTopicBot(discord.Client):
                     reactions=reactions,
                     votes=votes,
                     measured_at=now.isoformat(),
+                    at_hours=at_hours,
                 )
             )
-            self.state.pending_measurements.remove(pending)
+            pending.measured_count += 1
+            if pending.measured_count >= len(checkpoints):
+                self.state.pending_measurements.remove(pending)
             changed = True
             logger.info(
-                "お題の反応を計測 (message_id=%s, 返信=%d, リアクション=%d, 投票=%d): %s",
-                pending.message_id, replies, reactions, votes, pending.topic,
+                "お題の反応を計測 (%d時間後, message_id=%s, 返信=%d, リアクション=%d, 投票=%d): %s",
+                at_hours, pending.message_id, replies, reactions, votes, pending.topic,
             )
         if changed:
             self.state.topic_stats = self.state.topic_stats[-TOPIC_STATS_KEPT:]
             self.save()
 
     def _good_examples(self) -> list[str]:
-        """反応が良かったお題を few-shot 用に返す（スコア上位3件。反応ゼロは除く）。"""
-        scored = [(_reaction_score(s), s.topic) for s in self.state.topic_stats]
+        """反応が良かったお題を few-shot 用に返す（スコア上位3件。反応ゼロは除く）。
+
+        1点目の計測行だけを見る。1お題が最大2行あるため、混ぜると同じお題が重複する。
+        """
+        scored = [
+            (_reaction_score(s), s.topic)
+            for s in self.state.topic_stats
+            if s.at_hours == self.settings.measure_after_hours
+        ]
         ranked = sorted(
             (pair for pair in scored if pair[0] > 0), key=lambda pair: pair[0], reverse=True
         )

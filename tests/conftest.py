@@ -57,6 +57,8 @@ def settings():
         optout_emoji="🚫",
         use_poll=True,
         measure_after_hours=6,
+        measure_final_after_hours=24,
+        measure_giveup_hours=72,
         dry_run=False,
         log_channel_id=0,
         owner_user_id=0,

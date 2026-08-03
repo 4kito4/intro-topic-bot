@@ -34,6 +34,8 @@ class Settings:
     optout_emoji: str
     use_poll: bool
     measure_after_hours: int
+    measure_final_after_hours: int  # 0 なら1点計測のみ
+    measure_giveup_hours: int
     dry_run: bool
     log_channel_id: int
     owner_user_id: int
@@ -68,6 +70,14 @@ def _require_bool(name: str, default: bool) -> bool:
 
 def load_settings() -> Settings:
     load_dotenv(PROJECT_DIR / ".env")
+    measure_after_hours = _require_int("MEASURE_AFTER_HOURS", 6)
+    measure_final_after_hours = _require_int("MEASURE_FINAL_AFTER_HOURS", 24)
+    # 2点目が1点目以前だと計測が進まないため、起動時に弾く
+    if 0 < measure_final_after_hours <= measure_after_hours:
+        raise RuntimeError(
+            "MEASURE_FINAL_AFTER_HOURS は MEASURE_AFTER_HOURS より大きい値にしてください "
+            f"(現在: {measure_final_after_hours} <= {measure_after_hours})"
+        )
     return Settings(
         discord_token=_require("DISCORD_TOKEN"),
         gemini_api_key=_require("GEMINI_API_KEY"),
@@ -86,7 +96,9 @@ def load_settings() -> Settings:
         pool_max_age_days=_require_int("POOL_MAX_AGE_DAYS", 90),
         optout_emoji=os.environ.get("OPTOUT_EMOJI", "").strip() or DEFAULT_OPTOUT_EMOJI,
         use_poll=_require_bool("USE_POLL", True),
-        measure_after_hours=_require_int("MEASURE_AFTER_HOURS", 6),
+        measure_after_hours=measure_after_hours,
+        measure_final_after_hours=measure_final_after_hours,
+        measure_giveup_hours=_require_int("MEASURE_GIVEUP_HOURS", 72),
         dry_run=_require_bool("DRY_RUN", False),
         log_channel_id=_require_int("LOG_CHANNEL_ID", 0),
         owner_user_id=_require_int("OWNER_USER_ID", 0),
