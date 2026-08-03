@@ -46,15 +46,16 @@ def _full_state(iso) -> State:
         pending_measurements=[
             PendingMeasurement(
                 message_id=301, topic="お題2", format="values",
-                posted_at=iso(hours=3), is_poll=True,
+                posted_at=iso(hours=3), is_poll=True, measured_count=1,
             )
         ],
         topic_stats=[
             TopicStat(
                 topic="お題3", format="aruaru", replies=2, reactions=3, votes=4,
-                measured_at=iso(hours=4),
+                measured_at=iso(hours=4), at_hours=24,
             )
         ],
+        paused=True,
     )
 
 
@@ -88,6 +89,7 @@ def test_旧state_jsonはデフォルトで補完される(tmp_path):
     assert loaded.pending_measurements == []
     assert loaded.topic_stats == []
     assert loaded.last_posted_at is None
+    assert loaded.paused is False
 
 
 def test_next_retry_atがないキュー項目も読める(tmp_path, iso):
@@ -112,6 +114,41 @@ def test_next_retry_atがないキュー項目も読める(tmp_path, iso):
     item = load_state(path).queue[0]
     assert item.retry_count == 2
     assert item.next_retry_at is None
+
+
+def test_計測フィールドがない旧state_jsonもデフォルトで読める(tmp_path, iso):
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "pending_measurements": [
+                    {
+                        "message_id": 301,
+                        "topic": "お題2",
+                        "format": "values",
+                        "posted_at": iso(hours=3),
+                        "is_poll": True,
+                    }
+                ],
+                "topic_stats": [
+                    {
+                        "topic": "お題3",
+                        "format": "aruaru",
+                        "replies": 2,
+                        "reactions": 3,
+                        "votes": 4,
+                        "measured_at": iso(hours=4),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_state(path)
+    assert loaded.pending_measurements[0].measured_count == 0
+    # 旧データは6時間後の1点計測だった
+    assert loaded.topic_stats[0].at_hours == 6
+    assert loaded.paused is False
 
 
 def test_旧形式のlast_chat_activityを移行する(tmp_path, iso):

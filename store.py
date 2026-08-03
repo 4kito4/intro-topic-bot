@@ -46,6 +46,7 @@ class PendingMeasurement:
     format: str
     posted_at: str  # ISO 8601 (aware)
     is_poll: bool = False
+    measured_count: int = 0  # 計測済みの回数（0=未計測）
 
 
 @dataclass
@@ -58,6 +59,8 @@ class TopicStat:
     reactions: int
     votes: int
     measured_at: str  # ISO 8601 (aware)
+    # 投稿から何時間後の計測か。旧データは実際に6時間後の1点計測なので既定6が意味的にも正しい
+    at_hours: int = 6
 
 
 @dataclass
@@ -73,6 +76,7 @@ class State:
     # 反応の計測待ち / 計測済み（few-shot への還元用）
     pending_measurements: list[PendingMeasurement] = field(default_factory=list)
     topic_stats: list[TopicStat] = field(default_factory=list)
+    paused: bool = False  # 自動投稿の一時停止（再起動で揮発しないよう永続化する）
 
     def is_processed(self, message_id: int) -> bool:
         return message_id in self.processed_ids or any(
@@ -101,6 +105,7 @@ def load_state(path: Path) -> State:
             PendingMeasurement(**item) for item in raw.get("pending_measurements", [])
         ],
         topic_stats=[TopicStat(**item) for item in raw.get("topic_stats", [])],
+        paused=raw.get("paused", False),
     )
 
 
