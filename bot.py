@@ -217,6 +217,8 @@ class IntroTopicBot(discord.Client):
         super().__init__(intents=intents)
         self.settings = settings
         self.state: State = load_state(settings.state_path)
+        # 投稿処理はワーカーと手動トリガーの両方から呼ばれるので直列化する
+        self._post_lock = asyncio.Lock()
 
     def save(self) -> None:
         save_state(self.settings.state_path, self.state)
@@ -241,11 +243,11 @@ class IntroTopicBot(discord.Client):
         if self._is_manual_trigger(message):
             logger.info("手動トリガーを受信: user_id=%s", message.author.id)
             try:
-                await self._generate_and_post()
+                summary = await self._generate_and_post()
             except Exception:
                 logger.exception("手動トリガーでの投稿に失敗")
             else:
-                logger.info("手動トリガーの処理が完了")
+                logger.info("手動トリガーの処理が完了: %s", summary)
             return
         if message.channel.id == self.settings.chat_channel_id:
             self._record_chat_activity(message.created_at)
@@ -341,13 +343,30 @@ class IntroTopicBot(discord.Client):
     async def _post_worker_body(self) -> None:
         self._prune_expired_pool()
         await self._measure_pending()
+        # ロック取得後にも再判定するが、無駄なロック競合を減らすためここでも見る
         reason = self._blocked_reason()
         if reason is not None:
             logger.debug("投稿見送り: %s", reason)
             return
-        await self._generate_and_post()
+        await self._generate_and_post(enforce_conditions=True)
 
-    async def _generate_and_post(self) -> None:
+    async def _generate_and_post(self, enforce_conditions: bool = False) -> str:
+        """お題を1件生成して投稿し、結果のサマリを返す（投稿しなかった場合も理由を返す）。
+
+        投稿全体をロックで直列化する。さらに enforce_conditions=True（ワーカー経路）は
+        ロックを取ってから投稿条件を再判定する: 手動投稿の生成待ち（数秒〜数十秒）の間に
+        ワーカーが発火すると、古い last_posted_at で「投稿可」と判定されたまま待たされ、
+        ロック解放直後に2件目が出てしまうため。手動経路は投稿条件を無視して投稿する。
+        """
+        async with self._post_lock:
+            if enforce_conditions:
+                reason = self._blocked_reason()
+                if reason is not None:
+                    logger.debug("投稿見送り(再判定): %s", reason)
+                    return f"投稿を見送りました: {reason}"
+            return await self._post_once()
+
+    async def _post_once(self) -> str:
         """候補を選んでお題を生成し投稿する。投稿条件の判定は呼び出し側で済ませておく。"""
         # 優先順位: 新規キュー → 再利用プール → 自己紹介を使わない汎用お題。
         # 生成直前に元メッセージを取り直し、破棄された候補はその周回のうちに次へ送る
@@ -358,7 +377,7 @@ class IntroTopicBot(discord.Client):
             outcome = await self._refresh_source(candidate)
             if outcome == "skip":
                 logger.debug("投稿見送り: 元メッセージを再取得できなかった")
-                return
+                return "投稿を見送りました: 元の自己紹介を再取得できませんでした"
             if outcome == "ok":
                 chosen = candidate
                 break
@@ -385,7 +404,7 @@ class IntroTopicBot(discord.Client):
             if item is None:
                 # プール由来・汎用由来は捨てるものがないのでリトライ管理は不要
                 logger.exception("話題生成に失敗 (種別=%s, message_id=%s)", source, source_id)
-                return
+                return f"お題の生成に失敗しました (種別={source})"
             item.retry_count += 1
             logger.exception(
                 "話題生成に失敗 (message_id=%s, %d/%d 回目)",
@@ -417,11 +436,10 @@ class IntroTopicBot(discord.Client):
                 )
             self.save()
             await self._log_event(log_kind, log_title, log_body)
-            return
+            return f"{log_title}\n{log_body}"
 
         if self.settings.dry_run:
-            await self._report_dry_run(source, result, review)
-            return
+            return "[DRY_RUN] 投稿予定\n" + await self._report_dry_run(source, result, review)
 
         channel = self.get_channel(self.settings.chat_channel_id)
         if not isinstance(channel, discord.TextChannel):
@@ -476,11 +494,12 @@ class IntroTopicBot(discord.Client):
         if review is not None and not review.approved:
             summary += f"\n審査不合格のまま採用: {review.reason}"
         await self._log_event("success", "お題を投稿しました", summary)
+        return f"お題を投稿しました\n{summary}"
 
     async def _report_dry_run(
         self, source: str, result: TopicResult, review: ReviewResult | None
-    ) -> None:
-        """DRY_RUN: 投稿予定の内容を出すだけで state は一切変更しない。"""
+    ) -> str:
+        """DRY_RUN: 投稿予定の内容を出すだけで state は一切変更しない。戻り値は予定の文面。"""
         as_poll = (
             self.settings.use_poll
             and result.format == "choice"
@@ -501,6 +520,7 @@ class IntroTopicBot(discord.Client):
         text = "\n".join(lines)
         logger.info("DRY_RUN のため投稿せず: %s", text)
         await self._log_event("warning", "[DRY_RUN] 投稿予定", text)
+        return text
 
     async def _log_event(self, kind: LogKind, title: str, body: str = "") -> None:
         """運用ログを種別ごとの色付き embed でチャンネルに流す。

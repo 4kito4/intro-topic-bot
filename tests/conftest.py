@@ -6,6 +6,7 @@ IntroTopicBot のメソッドを載せて検証する。
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -77,10 +78,12 @@ class BotStub:
         self.state = state
         self.settings = settings
         self.saved = 0
+        self._post_lock = asyncio.Lock()
 
     def save(self) -> None:
         self.saved += 1
 
+    _generate_and_post = IntroTopicBot._generate_and_post
     _pick_item = IntroTopicBot._pick_item
     _pick_pool_item = IntroTopicBot._pick_pool_item
     _format_candidates = IntroTopicBot._format_candidates
