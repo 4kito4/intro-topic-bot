@@ -59,6 +59,17 @@ FORMAT_PRIOR_WEIGHT = 2
 
 RefreshVerdict = Literal["ok", "optout", "too_short"]
 RefreshOutcome = Literal["ok", "discarded", "skip"]
+LogKind = Literal["success", "info", "warning", "error"]
+
+# 運用ログの色。表示のための定数であり運用で調整する閾値ではないので .env には出さない
+LOG_COLORS: dict[LogKind, int] = {
+    "success": 0x57F287,  # 緑: 正常に完了した
+    "info": 0x99AAB5,  # 灰: 記録だけ
+    "warning": 0xFEE75C,  # 黄: 投稿しなかった・後で再試行する
+    "error": 0xED4245,  # 赤: 人が対処する必要がある
+}
+EMBED_DESCRIPTION_MAX = 4096  # Discord の embed description 上限
+LOG_TEXT_MAX = 1900  # フォールバック時の上限（content 2000 制限に余裕を持たせる）
 
 
 def now_utc() -> datetime:
@@ -158,6 +169,32 @@ def _is_measure_given_up(
     return elapsed > timedelta(hours=checkpoints[-1] + giveup_hours)
 
 
+def _truncate(text: str, limit: int) -> str:
+    """上限を超える文字列を省略記号付きで切り詰める。"""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _log_embed(kind: LogKind, title: str, body: str) -> discord.Embed:
+    """運用ログの embed。種別ごとに色を変え、一覧から異常を拾いやすくする。"""
+    return discord.Embed(
+        title=title,
+        description=_truncate(body, EMBED_DESCRIPTION_MAX),
+        color=LOG_COLORS[kind],
+    )
+
+
+def _log_fallback_text(title: str, body: str) -> str:
+    """Embed Links 権限がないときの代替テキスト。タイトル込みで content 上限に収める。"""
+    return _truncate(f"**{title}**\n{body}", LOG_TEXT_MAX)
+
+
+def _startup_summary(state: State, dry_run: bool) -> str:
+    """起動通知の本文。意図しない再起動に気づけるよう、そのときの状態を並べる。"""
+    return f"DRY_RUN={dry_run} / paused={state.paused} / キュー{len(state.queue)}件"
+
+
 def _judge_refresh(
     message: discord.Message, optout_emoji: str, min_intro_length: int
 ) -> RefreshVerdict:
@@ -192,6 +229,9 @@ class IntroTopicBot(discord.Client):
         await self._init_chat_activity()
         if not self.post_worker.is_running():
             self.post_worker.start()
+        await self._log_event(
+            "info", "起動しました", _startup_summary(self.state, self.settings.dry_run)
+        )
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
@@ -293,8 +333,10 @@ class IntroTopicBot(discord.Client):
         """想定外の例外でループが停止しないよう、本体処理を包んで次周回へ継続する。"""
         try:
             await self._post_worker_body()
-        except Exception:
+        except Exception as exc:
             logger.exception("投稿ワーカーで想定外のエラー。次周回に継続します")
+            # 通知は repr だけにする（フルトレースはローカルログで追う）
+            await self._log_event("error", "投稿ワーカーで想定外のエラー", repr(exc))
 
     async def _post_worker_body(self) -> None:
         self._prune_expired_pool()
@@ -349,20 +391,32 @@ class IntroTopicBot(discord.Client):
                 "話題生成に失敗 (message_id=%s, %d/%d 回目)",
                 item.message_id, item.retry_count, MAX_RETRIES,
             )
+            log_kind: LogKind
             if item.retry_count >= MAX_RETRIES:
                 logger.error("リトライ上限に達したため破棄: message_id=%s", item.message_id)
                 self.state.queue.remove(item)
                 self.state.processed_ids.append(item.message_id)
+                log_kind = "error"
+                log_title = "生成に失敗し続けたため自己紹介を破棄しました"
+                log_body = f"message_id={item.message_id} / {MAX_RETRIES}回連続で失敗"
             else:
                 # 失敗が続くほど間隔を空ける（API 障害中に無駄打ちしない）
                 minutes = RETRY_BACKOFF_MINUTES[
                     min(item.retry_count - 1, len(RETRY_BACKOFF_MINUTES) - 1)
                 ]
-                item.next_retry_at = (now_utc() + timedelta(minutes=minutes)).isoformat()
+                next_retry = now_utc() + timedelta(minutes=minutes)
+                item.next_retry_at = next_retry.isoformat()
                 logger.info(
                     "次のリトライは%d分後: message_id=%s", minutes, item.message_id
                 )
+                log_kind = "warning"
+                log_title = "お題の生成に失敗しました"
+                log_body = (
+                    f"message_id={item.message_id} / {item.retry_count}/{MAX_RETRIES}回目\n"
+                    f"次のリトライ: {next_retry.astimezone(JST):%m-%d %H:%M} JST"
+                )
             self.save()
+            await self._log_event(log_kind, log_title, log_body)
             return
 
         if self.settings.dry_run:
@@ -416,12 +470,12 @@ class IntroTopicBot(discord.Client):
             result.topic_question,
         )
         summary = (
-            f"お題を投稿しました (種別={source}, 形式={result.format}, 審査={review_label})\n"
+            f"種別={source} / 形式={result.format} / 審査={review_label}\n"
             f"{result.topic_question}"
         )
         if review is not None and not review.approved:
             summary += f"\n審査不合格のまま採用: {review.reason}"
-        await self._log_to_channel(summary)
+        await self._log_event("success", "お題を投稿しました", summary)
 
     async def _report_dry_run(
         self, source: str, result: TopicResult, review: ReviewResult | None
@@ -433,8 +487,8 @@ class IntroTopicBot(discord.Client):
             and _valid_poll_options(result.poll_options)
         )
         lines = [
-            f"[DRY_RUN] 投稿予定 (種別={source}, 形式={result.format}, "
-            f"審査={_review_label(review)})",
+            f"種別={source} / 形式={result.format} / 審査={_review_label(review)}",
+            "",
             _compose_poll_header(result, self.settings.topic_footer)
             if as_poll
             else _compose_text_body(result, self.settings.topic_footer),
@@ -446,10 +500,14 @@ class IntroTopicBot(discord.Client):
             lines.append(f"審査コメント: {review.reason}")
         text = "\n".join(lines)
         logger.info("DRY_RUN のため投稿せず: %s", text)
-        await self._log_to_channel(text)
+        await self._log_event("warning", "[DRY_RUN] 投稿予定", text)
 
-    async def _log_to_channel(self, text: str) -> None:
-        """運用ログをチャンネルに流す。ログ機能の失敗で本体を止めない。"""
+    async def _log_event(self, kind: LogKind, title: str, body: str = "") -> None:
+        """運用ログを種別ごとの色付き embed でチャンネルに流す。
+
+        except 節からも呼ぶため、送信の失敗はすべてここで握って本体・ワーカーを止めない。
+        Embed Links 権限がない場合はプレーンテキストで送り直す。
+        """
         if not self.settings.log_channel_id:
             return
         channel = self.get_channel(self.settings.log_channel_id)
@@ -459,9 +517,18 @@ class IntroTopicBot(discord.Client):
             )
             return
         try:
-            await channel.send(text)
+            await channel.send(embed=_log_embed(kind, title, body))
+            return
+        except discord.Forbidden as exc:
+            # Embed Links 権限がないケース。テキストなら通ることがある
+            logger.warning("embed を送信できないためテキストで送り直します: %s", exc)
         except discord.HTTPException as exc:
             logger.warning("ログチャンネルへの送信に失敗: %s", exc)
+            return
+        try:
+            await channel.send(_log_fallback_text(title, body))
+        except discord.HTTPException as exc:
+            logger.warning("ログチャンネルへのテキスト送信にも失敗: %s", exc)
 
     async def _send_topic(
         self, channel: discord.TextChannel, result: TopicResult
@@ -555,9 +622,11 @@ class IntroTopicBot(discord.Client):
                     )
                     self.state.pending_measurements.remove(pending)
                     changed = True
-                    await self._log_to_channel(
-                        f"お題の反応を計測できないまま猶予を過ぎたため計測を諦めました "
-                        f"(message_id={pending.message_id}): {pending.topic}"
+                    await self._log_event(
+                        "warning",
+                        "お題の反応を計測できないため諦めました",
+                        f"message_id={pending.message_id} / "
+                        f"猶予{self.settings.measure_giveup_hours}時間を超過\n{pending.topic}",
                     )
                     continue
                 logger.warning(
