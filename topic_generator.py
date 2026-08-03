@@ -21,6 +21,14 @@ FORMAT_LABELS: dict[TopicFormat, str] = {
     "aruaru": "あるある型",
     "hypothetical": "仮定型",
 }
+# 投稿の見出しに使う形式別の絵文字（文字列のみ。Discord 非依存を保つ）
+FORMAT_EMOJI: dict[TopicFormat, str] = {
+    "choice": "⚖️",
+    "experience": "🎒",
+    "values": "🧭",
+    "aruaru": "😂",
+    "hypothetical": "🔮",
+}
 
 MAX_REGENERATE = 1  # 審査で不合格だったときに作り直す回数
 

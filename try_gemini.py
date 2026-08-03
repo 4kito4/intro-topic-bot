@@ -12,6 +12,7 @@ import sys
 
 from config import load_gemini_only_settings
 from topic_generator import (
+    FORMAT_EMOJI,
     FORMAT_LABELS,
     TOPIC_FORMATS,
     ReviewResult,
@@ -60,7 +61,8 @@ def show(
         verdict = "合格" if review.approved else f"不合格 ({', '.join(review.failed_criteria)})"
         print(f"審査: {verdict} — {review.reason}")
     print("--- 投稿イメージ ---")
-    print("💭 **お題**")
+    print(f"{FORMAT_EMOJI[result.format]} **お題**")
+    print()
     if result.lead_in:
         print(result.lead_in)
     print(f"**{result.topic_question}**")

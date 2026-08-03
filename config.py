@@ -33,6 +33,7 @@ class Settings:
     pool_max_age_days: int
     optout_emoji: str
     use_poll: bool
+    topic_footer: str  # 空なら表示しない
     measure_after_hours: int
     measure_final_after_hours: int  # 0 なら1点計測のみ
     measure_giveup_hours: int
@@ -96,6 +97,7 @@ def load_settings() -> Settings:
         pool_max_age_days=_require_int("POOL_MAX_AGE_DAYS", 90),
         optout_emoji=os.environ.get("OPTOUT_EMOJI", "").strip() or DEFAULT_OPTOUT_EMOJI,
         use_poll=_require_bool("USE_POLL", True),
+        topic_footer=os.environ.get("TOPIC_FOOTER", "").strip(),
         measure_after_hours=measure_after_hours,
         measure_final_after_hours=measure_final_after_hours,
         measure_giveup_hours=_require_int("MEASURE_GIVEUP_HOURS", 72),

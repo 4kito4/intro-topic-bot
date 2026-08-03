@@ -23,6 +23,7 @@ from store import (
     save_state,
 )
 from topic_generator import (
+    FORMAT_EMOJI,
     TOPIC_FORMATS,
     ReviewResult,
     TopicFormat,
@@ -39,6 +40,7 @@ MANUAL_TRIGGER_COMMAND = "!topic now"  # オーナー専用の手動トリガー
 BACKFILL_LIMIT = 50
 RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直近お題の件数
 RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
+DEFAULT_TOPIC_EMOJI = "💭"  # 未知の形式が来たときの見出し絵文字
 
 # Discord の投票の制約（question 300 文字 / answer 55 文字 / 選択肢は最大10件）
 POLL_DURATION = timedelta(hours=48)
@@ -81,16 +83,29 @@ def _review_label(review: ReviewResult | None) -> str:
     return "合格" if review.approved else "不合格"
 
 
-def _compose_text_body(result: TopicResult) -> str:
+def _topic_header(format: TopicFormat) -> str:
+    """お題の見出し。形式ごとに絵文字を変えて連投時の単調さを減らす。"""
+    return f"{FORMAT_EMOJI.get(format, DEFAULT_TOPIC_EMOJI)} **お題**"
+
+
+def _with_footer(body: str, footer: str) -> str:
+    """任意のフッタ（参加ハードルを下げる一言）を末尾に足す。空なら何も足さない。"""
+    footer = footer.strip()
+    return f"{body}\n\n{footer}" if footer else body
+
+
+def _compose_text_body(result: TopicResult, footer: str = "") -> str:
     """通常投稿の本文。問いは太字にして目に留まりやすくする。"""
     question = f"**{result.topic_question}**"
     body = f"{result.lead_in}\n{question}" if result.lead_in else question
-    return f"💭 **お題**\n{body}"
+    return _with_footer(f"{_topic_header(result.format)}\n\n{body}", footer)
 
 
-def _compose_poll_header(result: TopicResult) -> str:
+def _compose_poll_header(result: TopicResult, footer: str = "") -> str:
     """投票として投稿するときの本文。問いは投票側に入るので本文には入れない。"""
-    return f"💭 **お題**\n{result.lead_in}" if result.lead_in else "💭 **お題**"
+    header = _topic_header(result.format)
+    body = f"{header}\n\n{result.lead_in}" if result.lead_in else header
+    return _with_footer(body, footer)
 
 
 def _format_weights(
@@ -420,7 +435,9 @@ class IntroTopicBot(discord.Client):
         lines = [
             f"[DRY_RUN] 投稿予定 (種別={source}, 形式={result.format}, "
             f"審査={_review_label(review)})",
-            _compose_poll_header(result) if as_poll else _compose_text_body(result),
+            _compose_poll_header(result, self.settings.topic_footer)
+            if as_poll
+            else _compose_text_body(result, self.settings.topic_footer),
         ]
         if as_poll:
             lines.append(f"投票: {result.topic_question}")
@@ -462,12 +479,14 @@ class IntroTopicBot(discord.Client):
                 )
                 for option in result.poll_options or []:
                     poll.add_answer(text=option)
-                return await channel.send(_compose_poll_header(result), poll=poll), True
+                header = _compose_poll_header(result, self.settings.topic_footer)
+                return await channel.send(header, poll=poll), True
             logger.info(
                 "二択型だが選択肢が投票に使えないため通常投稿にする: %s", result.poll_options
             )
 
-        return await channel.send(_compose_text_body(result)), False
+        text = _compose_text_body(result, self.settings.topic_footer)
+        return await channel.send(text), False
 
     async def _thread_replies(self, message: discord.Message) -> int:
         """お題に立ったスレッドの発言数。Bot はスレッドに投稿しないので全件を返信として数える。
