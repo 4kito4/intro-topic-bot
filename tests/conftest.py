@@ -61,6 +61,7 @@ def settings():
         measure_after_hours=6,
         measure_final_after_hours=24,
         measure_giveup_hours=72,
+        backfill_scan_limit=200,
         dry_run=False,
         log_channel_id=0,
         owner_user_id=0,
@@ -91,6 +92,7 @@ class BotStub:
     _blocked_reason = IntroTopicBot._blocked_reason
     _quiet_blocked_reason = IntroTopicBot._quiet_blocked_reason
     _good_examples = IntroTopicBot._good_examples
+    _prune_expired = IntroTopicBot._prune_expired
     _is_manual_trigger = IntroTopicBot._is_manual_trigger
 
 

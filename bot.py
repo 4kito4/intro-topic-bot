@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -41,7 +42,10 @@ RETRY_BACKOFF_MINUTES = (5, 20, 60)  # 生成失敗が続いたときに次の�
 # オーナー専用の手動トリガー。/topic now の登録が本番で失敗したときの唯一の制御経路として
 # 残している非推奨のフォールバック。次のラウンドで削除する
 MANUAL_TRIGGER_COMMAND = "!topic now"
-BACKFILL_LIMIT = 50
+BACKFILL_LIMIT = 50  # 起動時にオフライン中の自己紹介を拾う件数
+# /topic backfill で指定できる走査件数の範囲（既定値は .env の BACKFILL_SCAN_LIMIT）
+BACKFILL_SCAN_MIN = 1
+BACKFILL_SCAN_MAX = 500
 RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直近お題の件数
 RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
 DEFAULT_TOPIC_EMOJI = "💭"  # 未知の形式が来たときの見出し絵文字
@@ -63,6 +67,7 @@ FORMAT_PRIOR_WEIGHT = 2
 
 RefreshVerdict = Literal["ok", "optout", "too_short"]
 RefreshOutcome = Literal["ok", "discarded", "skip"]
+BackfillVerdict = Literal["ok", "bot", "dup", "too_old", "optout", "short"]
 LogKind = Literal["success", "info", "warning", "error"]
 
 # 運用ログの色。表示のための定数であり運用で調整する閾値ではないので .env には出さない
@@ -302,6 +307,31 @@ def _judge_refresh(
     return "ok"
 
 
+def _backfill_verdict(
+    message: discord.Message, state: State, settings: Settings, now: datetime
+) -> BackfillVerdict:
+    """過去の自己紹介を再利用プールへ取り込んでよいか判定する（Discord API を叩かない）。
+
+    除外した分は state に書かないので、同じ範囲を再実行しても取り込み済みが dup になるだけ。
+    """
+    if message.author.bot:
+        return "bot"
+    # is_processed は processed_ids とキューしか見ないので、プールは自分で確認する
+    if state.is_processed(message.id) or any(
+        item.message_id == message.id for item in state.intro_pool
+    ):
+        return "dup"
+    if message.created_at <= now - timedelta(days=settings.pool_max_age_days):
+        # 取り込んでも _prune_expired ですぐ消えるので入れない（保持期限と同じ向きで判定する）
+        return "too_old"
+    verdict = _judge_refresh(message, settings.optout_emoji, settings.min_intro_length)
+    if verdict == "optout":
+        return "optout"
+    if verdict == "too_short":
+        return "short"
+    return "ok"
+
+
 class IntroTopicBot(discord.Client):
     def __init__(self, settings: Settings) -> None:
         intents = discord.Intents.default()
@@ -473,7 +503,7 @@ class IntroTopicBot(discord.Client):
             await self._log_event("error", "投稿ワーカーで想定外のエラー", repr(exc))
 
     async def _post_worker_body(self) -> None:
-        self._prune_expired_pool()
+        self._prune_expired()
         await self._measure_pending()
         # ロック取得後にも再判定するが、無駄なロック競合を減らすためここでも見る
         reason = self._blocked_reason()
@@ -887,18 +917,72 @@ class IntroTopicBot(discord.Client):
             self.state.intro_pool.remove(source)
         self.save()
 
-    def _prune_expired_pool(self) -> None:
-        """プライバシー配慮: 保持期限を過ぎた自己紹介本文をプールから削除する。"""
+    def _prune_expired(self) -> None:
+        """プライバシー配慮: 保持期限を過ぎた自己紹介の本文をプールとキューから削除する。
+
+        キューに滞留したまま期限を迎えた分も対象にする（本文を保持しているのは同じため）。
+        消したキュー項目は再取り込みされないよう processed_ids へ移す。
+        """
         cutoff = now_utc() - timedelta(days=self.settings.pool_max_age_days)
-        kept = [p for p in self.state.intro_pool if p.created_dt() > cutoff]
-        removed = len(self.state.intro_pool) - len(kept)
-        if removed:
-            self.state.intro_pool = kept
+        kept_pool = [p for p in self.state.intro_pool if p.created_dt() > cutoff]
+        kept_queue = [q for q in self.state.queue if q.created_dt() > cutoff]
+        expired_pool = len(self.state.intro_pool) - len(kept_pool)
+        expired_queue = [q for q in self.state.queue if q.created_dt() <= cutoff]
+        if not expired_pool and not expired_queue:
+            return
+        self.state.intro_pool = kept_pool
+        self.state.queue = kept_queue
+        self.state.processed_ids.extend(item.message_id for item in expired_queue)
+        self.save()
+        logger.info(
+            "保持期限(%d日)を過ぎた自己紹介を削除: プール%d件 / キュー%d件",
+            self.settings.pool_max_age_days, expired_pool, len(expired_queue),
+        )
+
+    async def _backfill_pool(self, limit: int, apply: bool) -> str:
+        """#自己紹介 の過去ログを再利用プールへ取り込む。既定はプレビューのみ。
+
+        キューではなくプールに入れる: キューは古い順×投稿間隔で消費するため、
+        大量に積むと新規の自己紹介が何ヶ月も後回しになってしまう。
+        last_seen_at は触らない（巻き戻すと未処理の区間を恒久的に見逃す）。
+        """
+        channel = self.get_channel(self.settings.intro_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            raise RuntimeError(f"自己紹介チャンネルが見つかりません: {self.settings.intro_channel_id}")
+        now = now_utc()
+        counts: Counter[BackfillVerdict] = Counter()
+        added: list[PoolItem] = []
+        scanned = 0
+        async for message in channel.history(limit=limit):
+            scanned += 1
+            verdict = _backfill_verdict(message, self.state, self.settings, now)
+            counts[verdict] += 1
+            if verdict == "ok":
+                added.append(
+                    PoolItem(
+                        message_id=message.id,
+                        content=message.content,
+                        created_at=message.created_at.isoformat(),
+                        used_count=0,  # 未使用なので既存のプール項目より先に使われる
+                    )
+                )
+        # DRY_RUN は state を一切変更しない保証があるので、apply 指定でもプレビューに落とす
+        write = apply and not self.settings.dry_run
+        if write and added:
+            self.state.intro_pool.extend(added)
             self.save()
-            logger.info(
-                "保持期限(%d日)を過ぎた自己紹介をプールから削除: %d件",
-                self.settings.pool_max_age_days, removed,
-            )
+        summary = (
+            f"走査{scanned} / 追加{len(added) if write else 0} / 重複{counts['dup']} / "
+            f"期限超{counts['too_old']} / {self.settings.optout_emoji}{counts['optout']} / "
+            f"短文{counts['short']}"
+        )
+        if not apply:
+            summary += f"\nプレビューのみ（{len(added)}件を取り込むには apply:True を指定）"
+        elif not write:
+            summary += f"\nDRY_RUN=true のため反映していません（対象{len(added)}件）"
+        logger.info("バックフィル: %s", summary.replace("\n", " / "))
+        await self._log_event("info", "自己紹介のバックフィル", summary)
+        return summary
 
     def _pick_pool_item(self) -> PoolItem | None:
         """再利用プールから1件選ぶ。使用回数が少ないもの、同数なら最後に使ったのが古いものを優先。"""
@@ -1038,6 +1122,34 @@ class TopicCommands(app_commands.Group):
             return
         text = _format_queue_summary(self.bot.state, now_utc(), self.bot.settings)
         await interaction.response.send_message(text, ephemeral=True)
+
+    @app_commands.command(
+        name="backfill", description="過去の自己紹介を再利用プールへ取り込む"
+    )
+    @app_commands.describe(
+        limit="遡る件数（未指定なら .env の BACKFILL_SCAN_LIMIT）",
+        apply="true で実際に取り込む（既定はプレビューのみ）",
+    )
+    async def backfill(
+        self,
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, BACKFILL_SCAN_MIN, BACKFILL_SCAN_MAX] | None = None,
+        apply: bool = False,
+    ) -> None:
+        if await self._denied(interaction):
+            return
+        # 走査に3秒以上かかるので defer が必須
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            summary = await self.bot._backfill_pool(
+                limit or self.bot.settings.backfill_scan_limit, apply
+            )
+        except Exception as exc:
+            logger.exception("/topic backfill の処理に失敗")
+            summary = f"バックフィルに失敗しました: {exc!r}"
+        await interaction.followup.send(
+            _truncate(summary, INTERACTION_TEXT_MAX), ephemeral=True
+        )
 
     @app_commands.command(name="pause", description="自動投稿を一時停止する")
     async def pause(self, interaction: discord.Interaction) -> None:

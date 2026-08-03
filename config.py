@@ -37,6 +37,7 @@ class Settings:
     measure_after_hours: int
     measure_final_after_hours: int  # 0 なら1点計測のみ
     measure_giveup_hours: int
+    backfill_scan_limit: int  # /topic backfill で limit 未指定のときに遡る件数
     dry_run: bool
     log_channel_id: int
     owner_user_id: int
@@ -101,6 +102,7 @@ def load_settings() -> Settings:
         measure_after_hours=measure_after_hours,
         measure_final_after_hours=measure_final_after_hours,
         measure_giveup_hours=_require_int("MEASURE_GIVEUP_HOURS", 72),
+        backfill_scan_limit=_require_int("BACKFILL_SCAN_LIMIT", 200),
         dry_run=_require_bool("DRY_RUN", False),
         log_channel_id=_require_int("LOG_CHANNEL_ID", 0),
         owner_user_id=_require_int("OWNER_USER_ID", 0),
