@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 import discord
+from discord import app_commands
 from discord.ext import tasks
 
 from config import Settings, load_settings
@@ -24,6 +25,7 @@ from store import (
 )
 from topic_generator import (
     FORMAT_EMOJI,
+    FORMAT_LABELS,
     TOPIC_FORMATS,
     ReviewResult,
     TopicFormat,
@@ -36,7 +38,9 @@ logger = logging.getLogger("intro_topic_bot")
 JST = timezone(timedelta(hours=9), name="JST")
 MAX_RETRIES = 3
 RETRY_BACKOFF_MINUTES = (5, 20, 60)  # 生成失敗が続いたときに次の試行まで空ける時間
-MANUAL_TRIGGER_COMMAND = "!topic now"  # オーナー専用の手動トリガー
+# オーナー専用の手動トリガー。/topic now の登録が本番で失敗したときの唯一の制御経路として
+# 残している非推奨のフォールバック。次のラウンドで削除する
+MANUAL_TRIGGER_COMMAND = "!topic now"
 BACKFILL_LIMIT = 50
 RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直近お題の件数
 RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
@@ -70,6 +74,9 @@ LOG_COLORS: dict[LogKind, int] = {
 }
 EMBED_DESCRIPTION_MAX = 4096  # Discord の embed description 上限
 LOG_TEXT_MAX = 1900  # フォールバック時の上限（content 2000 制限に余裕を持たせる）
+INTERACTION_TEXT_MAX = 1900  # スラッシュコマンドの応答上限（同じく 2000 に余裕を持たせる）
+STATS_RECENT_TOPICS = 10  # /topic stats に並べる直近お題の件数
+STATS_TOPIC_MAX_LEN = 40  # 同上。1行が長くなりすぎないよう切り詰める
 
 
 def now_utc() -> datetime:
@@ -195,6 +202,91 @@ def _startup_summary(state: State, dry_run: bool) -> str:
     return f"DRY_RUN={dry_run} / paused={state.paused} / キュー{len(state.queue)}件"
 
 
+def _authorization_error(user_id: int, owner_user_id: int) -> str | None:
+    """管理コマンドを実行してよいか判定する。駄目なら理由（実行者に返す文面）を返す。"""
+    if owner_user_id == 0:
+        return (
+            "OWNER_USER_ID が未設定のため管理コマンドを使えません。"
+            ".env に運用者のユーザー ID を設定して Bot を再起動してください。"
+        )
+    if user_id != owner_user_id:
+        return "このコマンドは Bot の運用者だけが実行できます。"
+    return None
+
+
+def _jst_text(when: datetime) -> str:
+    return f"{when.astimezone(JST):%m-%d %H:%M} JST"
+
+
+def _recent_topic_lines(stats: list[TopicStat]) -> list[str]:
+    """直近のお題を「6h→24h」の形で並べる。1お題が複数行あるのでお題ごとにまとめる。"""
+    grouped: dict[str, dict[int, int]] = {}
+    for stat in stats:
+        grouped.setdefault(stat.topic, {})[stat.at_hours] = _reaction_score(stat)
+    lines = []
+    for topic, scores in list(grouped.items())[-STATS_RECENT_TOPICS:]:
+        measured = " → ".join(f"{hours}h={scores[hours]}" for hours in sorted(scores))
+        lines.append(f"- {_truncate(topic, STATS_TOPIC_MAX_LEN)}: {measured}")
+    return lines
+
+
+def _format_stats_summary(
+    state: State, settings: Settings, blocked_reason: str | None
+) -> str:
+    """/topic stats の本文。学習の中身と「今投稿できない理由」を運用者に見せる。"""
+    at_hours = settings.measure_after_hours
+    lines = [
+        f"**状態**: {'一時停止中' if state.paused else '稼働中'} / DRY_RUN={settings.dry_run}",
+        f"**投稿可否**: {blocked_reason or '投稿できます'}",
+        "",
+        f"**形式別の反応**（{at_hours}時間後の計測。重みは次のお題の選ばれやすさ）",
+    ]
+    weights = _format_weights(state.topic_stats, at_hours, TOPIC_FORMATS)
+    for fmt, weight in zip(TOPIC_FORMATS, weights):
+        scores = [
+            _reaction_score(s)
+            for s in state.topic_stats
+            if s.at_hours == at_hours and s.format == fmt
+        ]
+        average = f"{sum(scores) / len(scores):.1f}" if scores else "-"
+        lines.append(
+            f"- {FORMAT_LABELS[fmt]}: {len(scores)}件 / 平均{average} / 重み{weight:.2f}"
+        )
+    lines += ["", f"**直近のお題**（最新{STATS_RECENT_TOPICS}件）"]
+    lines += _recent_topic_lines(state.topic_stats) or ["- まだ計測結果がありません"]
+    return _truncate("\n".join(lines), INTERACTION_TEXT_MAX)
+
+
+def _format_queue_summary(state: State, now: datetime, settings: Settings) -> str:
+    """/topic queue の本文。ステルス設計のため自己紹介の本文は出さず件数だけを見せる。"""
+    ready = delayed = backoff = 0
+    for item in state.queue:
+        if item.next_retry_at is not None and datetime.fromisoformat(item.next_retry_at) > now:
+            # 遅延待ちも兼ねている場合は、より説明力のあるバックオフ側で数える
+            backoff += 1
+        elif now - item.created_dt() < timedelta(minutes=settings.min_delay_minutes):
+            delayed += 1
+        else:
+            ready += 1
+    if state.last_posted_at is None:
+        last_posted, next_post = "なし", "条件が揃い次第"
+    else:
+        posted_at = datetime.fromisoformat(state.last_posted_at)
+        next_at = posted_at + timedelta(hours=settings.post_interval_hours)
+        last_posted = _jst_text(posted_at)
+        next_post = "条件が揃い次第" if next_at <= now else _jst_text(next_at)
+    lines = [
+        f"**状態**: {'一時停止中' if state.paused else '稼働中'}",
+        f"**キュー**: {len(state.queue)}件"
+        f"（投稿可能{ready} / 遅延待ち{delayed} / 生成リトライ待ち{backoff}）",
+        f"**再利用プール**: {len(state.intro_pool)}件",
+        f"**計測待ち**: {len(state.pending_measurements)}件",
+        f"**前回の投稿**: {last_posted}",
+        f"**次に投稿できる時刻**: {next_post}",
+    ]
+    return _truncate("\n".join(lines), INTERACTION_TEXT_MAX)
+
+
 def _judge_refresh(
     message: discord.Message, optout_emoji: str, min_intro_length: int
 ) -> RefreshVerdict:
@@ -217,8 +309,11 @@ class IntroTopicBot(discord.Client):
         super().__init__(intents=intents)
         self.settings = settings
         self.state: State = load_state(settings.state_path)
+        self.tree = app_commands.CommandTree(self)
         # 投稿処理はワーカーと手動トリガーの両方から呼ばれるので直列化する
         self._post_lock = asyncio.Lock()
+        # 再接続で on_ready が再度呼ばれても、登録と起動通知は初回だけにする
+        self._startup_done = False
 
     def save(self) -> None:
         save_state(self.settings.state_path, self.state)
@@ -231,9 +326,43 @@ class IntroTopicBot(discord.Client):
         await self._init_chat_activity()
         if not self.post_worker.is_running():
             self.post_worker.start()
+        if self._startup_done:
+            return
+        self._startup_done = True
+        if self.settings.owner_user_id == 0:
+            logger.warning(
+                "OWNER_USER_ID が未設定です。/topic コマンドと %s は誰も実行できません",
+                MANUAL_TRIGGER_COMMAND,
+            )
+        await self._register_commands()
         await self._log_event(
             "info", "起動しました", _startup_summary(self.state, self.settings.dry_run)
         )
+
+    async def _register_commands(self) -> None:
+        """管理コマンドを雑談チャンネルのギルドへ登録する（ギルド同期なので即時反映される）。
+
+        applications.commands スコープなしで招待していると sync が失敗するが、
+        自動投稿は動かし続けたいので例外はここで止め、対処方法をログに出す。
+        """
+        channel = self.get_channel(self.settings.chat_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            raise RuntimeError(f"雑談チャンネルが見つかりません: {self.settings.chat_channel_id}")
+        guild = channel.guild
+        self.tree.add_command(TopicCommands(self), guild=guild)
+        try:
+            await self.tree.sync(guild=guild)
+        except discord.HTTPException as exc:  # Forbidden もここに含まれる
+            logger.exception("スラッシュコマンドを登録できませんでした")
+            await self._log_event(
+                "error",
+                "スラッシュコマンドを登録できませんでした",
+                f"{exc!r}\n"
+                "applications.commands スコープ付きの招待 URL で Bot を再招待してください。"
+                f"復旧するまでは {MANUAL_TRIGGER_COMMAND} で手動投稿できます。",
+            )
+            return
+        logger.info("管理コマンドを登録しました: guild_id=%s", guild.id)
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
@@ -257,7 +386,10 @@ class IntroTopicBot(discord.Client):
         self._enqueue_intro(message)
 
     def _is_manual_trigger(self, message: discord.Message) -> bool:
-        """オーナーが投稿タイミングを無視して1件出すためのコマンドか判定する。"""
+        """オーナーが投稿タイミングを無視して1件出すためのコマンドか判定する。
+
+        非推奨: /topic now の登録が失敗したときのフォールバック。次のラウンドで削除する。
+        """
         owner_id = self.settings.owner_user_id
         return (
             owner_id != 0
@@ -792,6 +924,9 @@ class IntroTopicBot(discord.Client):
     def _blocked_reason(self) -> str | None:
         """投稿条件を満たさない場合、その理由を返す。満たすなら None。"""
         s = self.settings
+        if self.state.paused:
+            # 止めるのは自動投稿だけ。計測・キュー取り込み・手動投稿は続ける
+            return "一時停止中 (/topic resume で再開)"
         now = now_utc()
         hour = now.astimezone(JST).hour
         if not (s.post_window_start <= hour < s.post_window_end):
@@ -844,6 +979,91 @@ class IntroTopicBot(discord.Client):
         if not eligible:
             return None
         return min(eligible, key=lambda item: item.created_dt())
+
+
+class TopicCommands(app_commands.Group):
+    """運用者向けの管理コマンド。
+
+    Manage Server 権限を持たないメンバーには一覧に出さず（ステルス設計の維持）、
+    実行できるのは OWNER_USER_ID 本人だけ。応答はすべて ephemeral で本人にしか見えない。
+    """
+
+    def __init__(self, bot: IntroTopicBot) -> None:
+        super().__init__(
+            name="topic",
+            description="お題botの管理",
+            default_permissions=discord.Permissions(manage_guild=True),
+            guild_only=True,
+        )
+        self.bot = bot
+
+    async def _denied(self, interaction: discord.Interaction) -> bool:
+        """実行者に権限がなければ理由を ephemeral で返して True。無言では終わらせない。"""
+        error = _authorization_error(interaction.user.id, self.bot.settings.owner_user_id)
+        if error is None:
+            return False
+        logger.info("権限のない管理コマンド実行: user_id=%s", interaction.user.id)
+        await interaction.response.send_message(error, ephemeral=True)
+        return True
+
+    @app_commands.command(name="now", description="投稿条件を無視してお題を1件投稿する")
+    async def now(self, interaction: discord.Interaction) -> None:
+        if await self._denied(interaction):
+            return
+        # 生成に3秒以上かかるので defer が必須
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            summary = await self.bot._generate_and_post()
+        except Exception as exc:
+            logger.exception("/topic now の処理に失敗")
+            summary = f"投稿に失敗しました: {exc!r}"
+        if self.bot.state.paused:
+            summary += "\n※一時停止中です（自動投稿は止まったままです）"
+        await interaction.followup.send(
+            _truncate(summary, INTERACTION_TEXT_MAX), ephemeral=True
+        )
+
+    @app_commands.command(name="stats", description="反応の計測結果と形式ごとの選ばれやすさを見る")
+    async def stats(self, interaction: discord.Interaction) -> None:
+        if await self._denied(interaction):
+            return
+        text = _format_stats_summary(
+            self.bot.state, self.bot.settings, self.bot._blocked_reason()
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @app_commands.command(name="queue", description="キュー・プール・次の投稿予定を見る")
+    async def queue(self, interaction: discord.Interaction) -> None:
+        if await self._denied(interaction):
+            return
+        text = _format_queue_summary(self.bot.state, now_utc(), self.bot.settings)
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @app_commands.command(name="pause", description="自動投稿を一時停止する")
+    async def pause(self, interaction: discord.Interaction) -> None:
+        if await self._denied(interaction):
+            return
+        await self._set_paused(interaction, True)
+
+    @app_commands.command(name="resume", description="自動投稿を再開する")
+    async def resume(self, interaction: discord.Interaction) -> None:
+        if await self._denied(interaction):
+            return
+        await self._set_paused(interaction, False)
+
+    async def _set_paused(self, interaction: discord.Interaction, paused: bool) -> None:
+        label = "一時停止" if paused else "再開"
+        if self.bot.state.paused == paused:
+            await interaction.response.send_message(f"すでに{label}しています。", ephemeral=True)
+            return
+        self.bot.state.paused = paused
+        # 永続化しないと PC 再起動で pause が揮発し、勝手に投稿が再開してしまう
+        self.bot.save()
+        await interaction.response.send_message(f"自動投稿を{label}しました。", ephemeral=True)
+        logger.info("自動投稿を%s: user_id=%s", label, interaction.user.id)
+        await self.bot._log_event(
+            "info", f"自動投稿を{label}しました", f"実行者: user_id={interaction.user.id}"
+        )
 
 
 def main() -> None:
