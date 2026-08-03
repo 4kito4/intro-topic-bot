@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -51,6 +52,8 @@ TOPIC_STATS_KEPT = 60  # 反応の計測結果を保持する件数（1お題あ
 GOOD_EXAMPLES_KEPT = 3  # few-shot として生成プロンプトに渡すお題の件数
 REPLY_WEIGHT = 3  # 返信は最も価値の高い反応
 VOTE_WEIGHT = 2  # 次に投票、リアクションは 1
+# 形式の重み付けを平滑化する仮想サンプル数。運用チューニング対象ではないので .env に出さない
+FORMAT_PRIOR_WEIGHT = 2
 
 RefreshVerdict = Literal["ok", "optout", "too_short"]
 RefreshOutcome = Literal["ok", "discarded", "skip"]
@@ -88,6 +91,30 @@ def _compose_text_body(result: TopicResult) -> str:
 def _compose_poll_header(result: TopicResult) -> str:
     """投票として投稿するときの本文。問いは投票側に入るので本文には入れない。"""
     return f"💭 **お題**\n{result.lead_in}" if result.lead_in else "💭 **お題**"
+
+
+def _format_weights(
+    stats: list[TopicStat], at_hours: int, formats: Sequence[TopicFormat]
+) -> list[float]:
+    """お題形式ごとの選択重み。反応スコアの平均をベイズ平滑化して求める。
+
+    観測の少ない形式は prior（全体平均）へ寄るので、少数の当たり外れで形式が固定されない。
+    at_hours の行だけを使う（同じお題が2行あるため、混ぜると比較が新旧値の混在になる）。
+    """
+    target = [s for s in stats if s.at_hours == at_hours]
+    if not target:
+        return [1.0] * len(formats)
+    prior = sum(_reaction_score(s) for s in target) / len(target)
+    if prior <= 0:
+        # 全お題が反応ゼロでも重みが全ゼロ（random.choices が ValueError）にならないようにする
+        prior = 1.0
+    weights = []
+    for fmt in formats:
+        scores = [_reaction_score(s) for s in target if s.format == fmt]
+        weights.append(
+            (FORMAT_PRIOR_WEIGHT * prior + sum(scores)) / (FORMAT_PRIOR_WEIGHT + len(scores))
+        )
+    return weights
 
 
 def _measure_checkpoints(settings: Settings) -> tuple[int, ...]:
@@ -641,14 +668,18 @@ class IntroTopicBot(discord.Client):
         return min(self.state.intro_pool, key=lambda p: (p.used_count, p.last_used_at or ""))
 
     def _format_candidates(self) -> list[TopicFormat]:
-        """次に使えるお題形式の候補を返す。将来はここで反応データによる重み付けを行う。"""
+        """次に使えるお題形式の候補を返す。"""
         recent = self.state.posted_formats[-RECENT_FORMATS_AVOIDED:]
         candidates = [f for f in TOPIC_FORMATS if f not in recent]
         return candidates or list(TOPIC_FORMATS)
 
     def _pick_format(self) -> TopicFormat:
-        """直近に使った形式を避けてお題形式を選ぶ。"""
-        return random.choice(self._format_candidates())
+        """直近に使った形式を避けつつ、反応が良かった形式ほど選ばれやすくする。"""
+        candidates = self._format_candidates()
+        weights = _format_weights(
+            self.state.topic_stats, self.settings.measure_after_hours, candidates
+        )
+        return random.choices(candidates, weights=weights)[0]
 
     def _blocked_reason(self) -> str | None:
         """投稿条件を満たさない場合、その理由を返す。満たすなら None。"""
