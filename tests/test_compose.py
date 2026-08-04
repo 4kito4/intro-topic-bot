@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from bot import _compose_poll_header, _compose_text_body
+from bot import _compose_poll_header, _compose_text_body, _with_role_mention
 from topic_generator import TOPIC_FORMATS, TopicResult
 
 TITLE = "💭 今日のお題"
@@ -76,3 +76,21 @@ def test_投票の本文にもサブテキストが付く():
 
 def test_投票でリード文がなくてもサブテキストは付く():
     assert _compose_poll_header(_result("choice"), TITLE, FOOTER) == f"{TITLE}\n-# {FOOTER}"
+
+
+# --- オプトイン通知 -------------------------------------------------------
+
+
+def test_通知ロールが未設定ならメンション行は入らない():
+    body = _compose_text_body(_result(), TITLE)
+    assert _with_role_mention(body, 0) == body
+
+
+def test_通知ロール設定時は先頭にメンション行が入る():
+    body = _compose_text_body(_result(), TITLE)
+    assert _with_role_mention(body, 123) == f"<@&123>\n{body}"
+
+
+def test_投票の本文にもメンション行が入る():
+    header = _compose_poll_header(_result("choice", lead_in="どっち派？"), TITLE)
+    assert _with_role_mention(header, 123).splitlines() == ["<@&123>", TITLE, "どっち派？"]

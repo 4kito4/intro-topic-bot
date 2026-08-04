@@ -130,6 +130,15 @@ def _compose_poll_header(result: TopicResult, title: str, footer: str = "") -> s
     return _compose_body(title, result.lead_in, None, footer)
 
 
+def _with_role_mention(body: str, role_id: int) -> str:
+    """オプトイン通知。ロールが設定されているときだけ本文の先頭にメンション行を足す。
+
+    通知を受け取るかはメンバーがそのロールを付けるかで決まるので、ステルス設計は崩れない
+    （個人へのメンションではなく、通知を希望した人だけが入るロールを呼ぶ）。
+    """
+    return f"<@&{role_id}>\n{body}" if role_id else body
+
+
 def _format_weights(
     stats: list[TopicStat], at_hours: int, formats: Sequence[TopicFormat]
 ) -> list[float]:
@@ -680,6 +689,9 @@ class IntroTopicBot(discord.Client):
         if as_poll:
             lines.append(f"投票: {result.topic_question}")
             lines.append("選択肢: " + " / ".join(result.poll_options or []))
+        if self.settings.topic_ping_role_id:
+            # 注記だけにする（メンション文字列を書くとログチャンネルで実際に通知が飛ぶ）
+            lines.append(f"通知: ロールID={self.settings.topic_ping_role_id}")
         if review is not None and not review.approved:
             lines.append(f"審査コメント: {review.reason}")
         text = "\n".join(lines)
@@ -722,6 +734,12 @@ class IntroTopicBot(discord.Client):
 
         戻り値: (投稿したメッセージ, 投票として投稿したか)
         """
+        role_id = self.settings.topic_ping_role_id
+        # ロールメンションを実際に飛ばすには明示的な許可が要る。
+        # 未設定なら None を渡し、既定（Client の allowed_mentions）のままにする
+        mentions = (
+            discord.AllowedMentions(roles=[discord.Object(id=role_id)]) if role_id else None
+        )
         if self.settings.use_poll and result.format == "choice":
             if _valid_poll_options(result.poll_options):
                 poll = discord.Poll(
@@ -731,18 +749,24 @@ class IntroTopicBot(discord.Client):
                 )
                 for option in result.poll_options or []:
                     poll.add_answer(text=option)
-                header = _compose_poll_header(
-                    result, self.settings.topic_title, self.settings.topic_footer
+                header = _with_role_mention(
+                    _compose_poll_header(
+                        result, self.settings.topic_title, self.settings.topic_footer
+                    ),
+                    role_id,
                 )
-                return await channel.send(header, poll=poll), True
+                return await channel.send(header, poll=poll, allowed_mentions=mentions), True
             logger.info(
                 "二択型だが選択肢が投票に使えないため通常投稿にする: %s", result.poll_options
             )
 
-        text = _compose_text_body(
-            result, self.settings.topic_title, self.settings.topic_footer
+        text = _with_role_mention(
+            _compose_text_body(
+                result, self.settings.topic_title, self.settings.topic_footer
+            ),
+            role_id,
         )
-        return await channel.send(text), False
+        return await channel.send(text, allowed_mentions=mentions), False
 
     async def _thread_replies(self, message: discord.Message) -> int:
         """お題に立ったスレッドの発言数。Bot はスレッドに投稿しないので全件を返信として数える。

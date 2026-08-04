@@ -36,6 +36,7 @@ class Settings:
     use_poll: bool
     topic_title: str  # お題投稿の1行目。毎回同じ固定の見出し
     topic_footer: str  # 空なら表示しない
+    topic_ping_role_id: int  # 0 ならお題投稿で通知しない
     measure_after_hours: int
     measure_final_after_hours: int  # 0 なら1点計測のみ
     measure_giveup_hours: int
@@ -102,6 +103,7 @@ def load_settings() -> Settings:
         use_poll=_require_bool("USE_POLL", True),
         topic_title=os.environ.get("TOPIC_TITLE", "").strip() or DEFAULT_TOPIC_TITLE,
         topic_footer=os.environ.get("TOPIC_FOOTER", "").strip(),
+        topic_ping_role_id=_require_int("TOPIC_PING_ROLE_ID", 0),
         measure_after_hours=measure_after_hours,
         measure_final_after_hours=measure_final_after_hours,
         measure_giveup_hours=_require_int("MEASURE_GIVEUP_HOURS", 72),
