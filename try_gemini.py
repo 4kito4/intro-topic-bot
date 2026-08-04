@@ -10,9 +10,8 @@ from __future__ import annotations
 import logging
 import sys
 
-from config import load_gemini_only_settings
+from config import DEFAULT_TOPIC_TITLE, load_gemini_only_settings
 from topic_generator import (
-    FORMAT_EMOJI,
     FORMAT_LABELS,
     TOPIC_FORMATS,
     ReviewResult,
@@ -60,9 +59,9 @@ def show(
     else:
         verdict = "合格" if review.approved else f"不合格 ({', '.join(review.failed_criteria)})"
         print(f"審査: {verdict} — {review.reason}")
+    # 実際の投稿は TOPIC_TITLE / TOPIC_FOOTER で変えられるが、ここは既定タイトルで表示する
     print("--- 投稿イメージ ---")
-    print(f"{FORMAT_EMOJI[result.format]} **お題**")
-    print()
+    print(DEFAULT_TOPIC_TITLE)
     if result.lead_in:
         print(result.lead_in)
     print(f"**{result.topic_question}**")

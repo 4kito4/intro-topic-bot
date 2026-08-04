@@ -25,7 +25,6 @@ from store import (
     save_state,
 )
 from topic_generator import (
-    FORMAT_EMOJI,
     FORMAT_LABELS,
     TOPIC_FORMATS,
     ReviewResult,
@@ -48,7 +47,6 @@ BACKFILL_SCAN_MIN = 1
 BACKFILL_SCAN_MAX = 500
 RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直近お題の件数
 RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
-DEFAULT_TOPIC_EMOJI = "💭"  # 未知の形式が来たときの見出し絵文字
 
 # Discord の投票の制約（question 300 文字 / answer 55 文字 / 選択肢は最大10件）
 POLL_DURATION = timedelta(hours=48)
@@ -106,29 +104,30 @@ def _review_label(review: ReviewResult | None) -> str:
     return "合格" if review.approved else "不合格"
 
 
-def _topic_header(format: TopicFormat) -> str:
-    """お題の見出し。形式ごとに絵文字を変えて連投時の単調さを減らす。"""
-    return f"{FORMAT_EMOJI.get(format, DEFAULT_TOPIC_EMOJI)} **お題**"
+def _compose_body(title: str, lead_in: str, question: str | None, footer: str) -> str:
+    """投稿の器。毎回同じ並び（タイトル → 導入文 → 太字の問い → サブテキスト）にする。
 
-
-def _with_footer(body: str, footer: str) -> str:
-    """任意のフッタ（参加ハードルを下げる一言）を末尾に足す。空なら何も足さない。"""
+    形式によって見た目を変えない（連投しても同じ枠に見えるほうが定期投稿として自然）。
+    空の要素は行ごと飛ばす。question=None は投票用（問いは投票側に入るので本文に入れない）。
+    """
     footer = footer.strip()
-    return f"{body}\n\n{footer}" if footer else body
+    lines = [
+        title,
+        lead_in,
+        f"**{question}**" if question else "",
+        f"-# {footer}" if footer else "",  # -# は Discord のサブテキスト（小さい薄字）記法
+    ]
+    return "\n".join(line for line in lines if line)
 
 
-def _compose_text_body(result: TopicResult, footer: str = "") -> str:
+def _compose_text_body(result: TopicResult, title: str, footer: str = "") -> str:
     """通常投稿の本文。問いは太字にして目に留まりやすくする。"""
-    question = f"**{result.topic_question}**"
-    body = f"{result.lead_in}\n{question}" if result.lead_in else question
-    return _with_footer(f"{_topic_header(result.format)}\n\n{body}", footer)
+    return _compose_body(title, result.lead_in, result.topic_question, footer)
 
 
-def _compose_poll_header(result: TopicResult, footer: str = "") -> str:
+def _compose_poll_header(result: TopicResult, title: str, footer: str = "") -> str:
     """投票として投稿するときの本文。問いは投票側に入るので本文には入れない。"""
-    header = _topic_header(result.format)
-    body = f"{header}\n\n{result.lead_in}" if result.lead_in else header
-    return _with_footer(body, footer)
+    return _compose_body(title, result.lead_in, None, footer)
 
 
 def _format_weights(
@@ -670,9 +669,13 @@ class IntroTopicBot(discord.Client):
         lines = [
             f"種別={source} / 形式={result.format} / 審査={_review_label(review)}",
             "",
-            _compose_poll_header(result, self.settings.topic_footer)
+            _compose_poll_header(
+                result, self.settings.topic_title, self.settings.topic_footer
+            )
             if as_poll
-            else _compose_text_body(result, self.settings.topic_footer),
+            else _compose_text_body(
+                result, self.settings.topic_title, self.settings.topic_footer
+            ),
         ]
         if as_poll:
             lines.append(f"投票: {result.topic_question}")
@@ -728,13 +731,17 @@ class IntroTopicBot(discord.Client):
                 )
                 for option in result.poll_options or []:
                     poll.add_answer(text=option)
-                header = _compose_poll_header(result, self.settings.topic_footer)
+                header = _compose_poll_header(
+                    result, self.settings.topic_title, self.settings.topic_footer
+                )
                 return await channel.send(header, poll=poll), True
             logger.info(
                 "二択型だが選択肢が投票に使えないため通常投稿にする: %s", result.poll_options
             )
 
-        text = _compose_text_body(result, self.settings.topic_footer)
+        text = _compose_text_body(
+            result, self.settings.topic_title, self.settings.topic_footer
+        )
         return await channel.send(text), False
 
     async def _thread_replies(self, message: discord.Message) -> int:

@@ -57,6 +57,7 @@ def settings():
         pool_max_age_days=90,
         optout_emoji="🚫",
         use_poll=True,
+        topic_title="💭 今日のお題",
         topic_footer="",
         measure_after_hours=6,
         measure_final_after_hours=24,

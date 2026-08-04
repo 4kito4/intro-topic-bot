@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_STATE_PATH = PROJECT_DIR / "state.json"
 DEFAULT_OPTOUT_EMOJI = "🚫"
+DEFAULT_TOPIC_TITLE = "💭 今日のお題"
 FALSE_VALUES = ("false", "0", "no")
 
 
@@ -33,6 +34,7 @@ class Settings:
     pool_max_age_days: int
     optout_emoji: str
     use_poll: bool
+    topic_title: str  # お題投稿の1行目。毎回同じ固定の見出し
     topic_footer: str  # 空なら表示しない
     measure_after_hours: int
     measure_final_after_hours: int  # 0 なら1点計測のみ
@@ -98,6 +100,7 @@ def load_settings() -> Settings:
         pool_max_age_days=_require_int("POOL_MAX_AGE_DAYS", 90),
         optout_emoji=os.environ.get("OPTOUT_EMOJI", "").strip() or DEFAULT_OPTOUT_EMOJI,
         use_poll=_require_bool("USE_POLL", True),
+        topic_title=os.environ.get("TOPIC_TITLE", "").strip() or DEFAULT_TOPIC_TITLE,
         topic_footer=os.environ.get("TOPIC_FOOTER", "").strip(),
         measure_after_hours=measure_after_hours,
         measure_final_after_hours=measure_final_after_hours,
