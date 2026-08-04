@@ -91,6 +91,7 @@ class BotStub:
         """運用ログの送信は Discord API を叩くので記録だけする。"""
         self.logged.append((kind, title, body))
 
+    _enqueue_intro = IntroTopicBot._enqueue_intro
     _generate_and_post = IntroTopicBot._generate_and_post
     _post_once = IntroTopicBot._post_once
     _post_fallback = IntroTopicBot._post_fallback
@@ -126,6 +127,21 @@ def make_queue_item(iso):
             content=content,
             created_at=iso(minutes=minutes_ago),
             next_retry_at=next_retry_at,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def make_message():
+    """discord.Message の代わり。_enqueue_intro が使う属性だけを持つ。"""
+
+    def _make(message_id=101, *, author_id=1, content="a" * 60, minutes_ago=0):
+        return SimpleNamespace(
+            id=message_id,
+            content=content,
+            author=SimpleNamespace(id=author_id, display_name=f"user{author_id}"),
+            created_at=NOW - timedelta(minutes=minutes_ago),
         )
 
     return _make

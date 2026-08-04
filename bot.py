@@ -454,6 +454,15 @@ class IntroTopicBot(discord.Client):
         if self.state.is_processed(message.id):
             self.save()
             return
+        # 同じ人が自己紹介を投稿し直した場合、古い方でお題を作らないよう差し替える。
+        # 再利用プールは使用済み資産なので触らない
+        for stale in [q for q in self.state.queue if q.author_id == message.author.id]:
+            self.state.queue.remove(stale)
+            self.state.processed_ids.append(stale.message_id)
+            logger.info(
+                "同一著者の旧項目を置換: 旧message_id=%s → 新message_id=%s",
+                stale.message_id, message.id,
+            )
         self.state.queue.append(
             QueueItem(
                 message_id=message.id,
