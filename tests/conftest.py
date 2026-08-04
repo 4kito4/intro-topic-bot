@@ -69,7 +69,9 @@ def settings():
         owner_user_id=0,
         intro_channel_id=111,
         chat_channel_id=222,
-        gemini_api_key="k",
+        # 秘密値が応答に混ざっていないか確かめられるよう、目印になる値を入れておく
+        discord_token="DISCORD-TOKEN-SECRET",
+        gemini_api_key="GEMINI-KEY-SECRET",
         gemini_model="m",
     )
 

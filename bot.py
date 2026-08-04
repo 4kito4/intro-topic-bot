@@ -302,6 +302,44 @@ def _format_queue_summary(state: State, now: datetime, settings: Settings) -> st
     return _truncate("\n".join(lines), INTERACTION_TEXT_MAX)
 
 
+def _format_status_summary(settings: Settings, state: State) -> str:
+    """/topic status の本文。運用者が .env を開かずに現在の設定を確認できるようにする。
+
+    トークン・API キーの値は絶対に出さない（設定されているかどうかだけを出す）。
+    """
+    modes = [
+        f"DRY_RUN={settings.dry_run}",
+        "一時停止中" if state.paused else "稼働中",
+        f"モデル={settings.gemini_model}"
+        if settings.gemini_api_key
+        else "定型お題モード (GEMINI_API_KEY 未設定)",
+        f"投票={'有効' if settings.use_poll else '無効'}",
+        f"通知ロール={settings.topic_ping_role_id or 'なし'}",
+    ]
+    measure = f"{settings.measure_after_hours}時間後"
+    if settings.measure_final_after_hours > 0:
+        measure += f" → {settings.measure_final_after_hours}時間後"
+    else:
+        measure += "（1点計測）"
+    lines = [
+        "**モード**: " + " / ".join(modes),
+        f"**チャンネル**: 投稿先={settings.chat_channel_id} / "
+        f"自己紹介={settings.intro_channel_id} / "
+        f"運用ログ={settings.log_channel_id or 'なし'}",
+        f"**投稿タイミング**: 間隔{settings.post_interval_hours}時間 / "
+        f"{settings.post_window_start}〜{settings.post_window_end}時 JST / "
+        f"検知から{settings.min_delay_minutes}分後以降",
+        f"**静穏判定**: 直近{settings.activity_window_minutes}分に"
+        f"{settings.busy_threshold}件以上なら会話中とみなして静穏"
+        f"{settings.quiet_busy_minutes}分 / まばらなら{settings.quiet_minutes}分",
+        f"**反応の計測**: {measure} / "
+        f"取得できなければ最終計測から{settings.measure_giveup_hours}時間で諦める",
+        f"**自己紹介**: 最小{settings.min_intro_length}文字 / "
+        f"保持{settings.pool_max_age_days}日 / オプトアウト{settings.optout_emoji}",
+    ]
+    return _truncate("\n".join(lines), INTERACTION_TEXT_MAX)
+
+
 def _judge_refresh(
     message: discord.Message, optout_emoji: str, min_intro_length: int
 ) -> RefreshVerdict:
@@ -1212,6 +1250,13 @@ class TopicCommands(app_commands.Group):
         if await self._denied(interaction):
             return
         text = _format_queue_summary(self.bot.state, now_utc(), self.bot.settings)
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @app_commands.command(name="status", description="現在の設定（.env の反映内容）を見る")
+    async def status(self, interaction: discord.Interaction) -> None:
+        if await self._denied(interaction):
+            return
+        text = _format_status_summary(self.bot.settings, self.bot.state)
         await interaction.response.send_message(text, ephemeral=True)
 
     @app_commands.command(
