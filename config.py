@@ -18,7 +18,7 @@ FALSE_VALUES = ("false", "0", "no")
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
-    gemini_api_key: str
+    gemini_api_key: str  # 空なら定型お題モード（Gemini を呼ばずに内蔵のお題を投稿する）
     gemini_model: str
     intro_channel_id: int
     chat_channel_id: int
@@ -85,7 +85,8 @@ def load_settings() -> Settings:
         )
     return Settings(
         discord_token=_require("DISCORD_TOKEN"),
-        gemini_api_key=_require("GEMINI_API_KEY"),
+        # 未設定でも起動する。Gemini が使えないだけで定型お題の投稿は続けられるため
+        gemini_api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash").strip(),
         intro_channel_id=_require_int("INTRO_CHANNEL_ID"),
         chat_channel_id=_require_int("CHAT_CHANNEL_ID"),

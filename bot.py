@@ -30,6 +30,7 @@ from topic_generator import (
     ReviewResult,
     TopicFormat,
     TopicResult,
+    fallback_topic,
     generate_topic,
 )
 
@@ -47,6 +48,7 @@ BACKFILL_SCAN_MIN = 1
 BACKFILL_SCAN_MAX = 500
 RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直近お題の件数
 RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
+FALLBACK_SOURCE = "定型"  # 内蔵の定型お題を投稿したときのログ・応答に出す種別
 
 # Discord の投票の制約（question 300 文字 / answer 55 文字 / 選択肢は最大10件）
 POLL_DURATION = timedelta(hours=48)
@@ -367,6 +369,11 @@ class IntroTopicBot(discord.Client):
         if self._startup_done:
             return
         self._startup_done = True
+        if not self.settings.gemini_api_key:
+            logger.info(
+                "GEMINI_API_KEY が未設定のため定型お題モードで動作します"
+                "（自己紹介は読まず、内蔵のお題だけを投稿します）"
+            )
         if self.settings.owner_user_id == 0:
             logger.warning(
                 "OWNER_USER_ID が未設定です。/topic コマンドと %s は誰も実行できません",
@@ -538,6 +545,9 @@ class IntroTopicBot(discord.Client):
 
     async def _post_once(self) -> str:
         """候補を選んでお題を生成し投稿する。投稿条件の判定は呼び出し側で済ませておく。"""
+        if not self.settings.gemini_api_key:
+            # 定型お題モード。自己紹介は読めないのでキュー・プールは消費しない
+            return await self._post_fallback("GEMINI_API_KEY が未設定")
         # 優先順位: 新規キュー → 再利用プール → 自己紹介を使わない汎用お題。
         # 生成直前に元メッセージを取り直し、破棄された候補はその周回のうちに次へ送る
         chosen: QueueItem | PoolItem | None = None
@@ -574,7 +584,10 @@ class IntroTopicBot(discord.Client):
             if item is None:
                 # プール由来・汎用由来は捨てるものがないのでリトライ管理は不要
                 logger.exception("話題生成に失敗 (種別=%s, message_id=%s)", source, source_id)
-                return f"お題の生成に失敗しました (種別={source})"
+                return (
+                    f"お題の生成に失敗しました (種別={source})\n"
+                    + await self._post_fallback("お題の生成に失敗")
+                )
             item.retry_count += 1
             logger.exception(
                 "話題生成に失敗 (message_id=%s, %d/%d 回目)",
@@ -606,7 +619,10 @@ class IntroTopicBot(discord.Client):
                 )
             self.save()
             await self._log_event(log_kind, log_title, log_body)
-            return f"{log_title}\n{log_body}"
+            # キュー項目は破棄・バックオフのどちらでも次周回に任せ、この周回は定型お題で埋める
+            return (
+                f"{log_title}\n{log_body}\n" + await self._post_fallback("お題の生成に失敗")
+            )
 
         if self.settings.dry_run:
             return "[DRY_RUN] 投稿予定\n" + await self._report_dry_run(source, result, review)
@@ -617,15 +633,7 @@ class IntroTopicBot(discord.Client):
         posted, is_poll = await self._send_topic(channel, result)
 
         now = now_utc()
-        self.state.pending_measurements.append(
-            PendingMeasurement(
-                message_id=posted.id,
-                topic=result.topic_question,
-                format=result.format,
-                posted_at=now.isoformat(),
-                is_poll=is_poll,
-            )
-        )
+        self._record_post(result, posted.id, is_poll, now)
         if item is not None:
             self.state.queue.remove(item)
             self.state.processed_ids.append(item.message_id)
@@ -642,14 +650,6 @@ class IntroTopicBot(discord.Client):
         elif pool_item is not None:
             pool_item.used_count += 1
             pool_item.last_used_at = now.isoformat()
-        self.state.last_posted_at = now.isoformat()
-        self.state.posted_topics = (self.state.posted_topics + [result.topic_question])[
-            -RECENT_TOPICS_KEPT:
-        ]
-        # ローテーションは実際に投稿された形式を基準にする（申告形式を採用）
-        self.state.posted_formats = (self.state.posted_formats + [result.format])[
-            -RECENT_TOPICS_KEPT:
-        ]
         self.save()
         review_label = _review_label(review)
         logger.info(
@@ -665,6 +665,57 @@ class IntroTopicBot(discord.Client):
             summary += f"\n審査不合格のまま採用: {review.reason}"
         await self._log_event("success", "お題を投稿しました", summary)
         return f"お題を投稿しました\n{summary}"
+
+    def _record_post(
+        self, result: TopicResult, message_id: int, is_poll: bool, now: datetime
+    ) -> None:
+        """投稿したお題を計測待ちと重複回避の履歴に記録する（定型お題も同じ扱い）。"""
+        self.state.pending_measurements.append(
+            PendingMeasurement(
+                message_id=message_id,
+                topic=result.topic_question,
+                format=result.format,
+                posted_at=now.isoformat(),
+                is_poll=is_poll,
+            )
+        )
+        self.state.last_posted_at = now.isoformat()
+        self.state.posted_topics = (self.state.posted_topics + [result.topic_question])[
+            -RECENT_TOPICS_KEPT:
+        ]
+        # ローテーションは実際に投稿された形式を基準にする（申告形式を採用）
+        self.state.posted_formats = (self.state.posted_formats + [result.format])[
+            -RECENT_TOPICS_KEPT:
+        ]
+
+    async def _post_fallback(self, reason: str) -> str:
+        """内蔵の定型お題を投稿する。Gemini が使えない周回でも定期投稿を絶やさない。
+
+        自己紹介を読んでいないので、キュー・プールの項目は消費しない
+        （キュー項目のリトライ管理は呼び出し側の既存処理に任せる）。
+        """
+        result = fallback_topic(self.state.posted_topics[-RECENT_TOPICS_KEPT:])
+        if self.settings.dry_run:
+            return "[DRY_RUN] 投稿予定\n" + await self._report_dry_run(
+                FALLBACK_SOURCE, result, None
+            )
+        channel = self.get_channel(self.settings.chat_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            raise RuntimeError(f"雑談チャンネルが見つかりません: {self.settings.chat_channel_id}")
+        posted, is_poll = await self._send_topic(channel, result)
+        self._record_post(result, posted.id, is_poll, now_utc())
+        self.save()
+        logger.info(
+            "定型お題を投稿 (理由=%s, message_id=%s, 形式=%s): %s",
+            reason, posted.id, result.format, result.topic_question,
+        )
+        summary = (
+            f"種別={FALLBACK_SOURCE} / 形式={result.format} / 理由={reason}\n"
+            f"{result.topic_question}"
+        )
+        # 投稿自体は成功しているので success。問題がある場合は直前に別の警告を出している
+        await self._log_event("success", "定型お題を投稿しました", summary)
+        return f"定型お題を投稿しました\n{summary}"
 
     async def _report_dry_run(
         self, source: str, result: TopicResult, review: ReviewResult | None

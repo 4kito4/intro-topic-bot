@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import random
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -25,6 +27,33 @@ FORMAT_LABELS: dict[TopicFormat, str] = {
 MAX_REGENERATE = 1  # 審査で不合格だったときに作り直す回数
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+@dataclass(frozen=True)
+class FallbackTopic:
+    """Gemini を使わずに投稿できる定型お題。"""
+
+    topic_question: str
+    format: TopicFormat
+
+
+# 定型お題。API キー未設定・Gemini 障害でも「定期お題 bot」の見た目を保つための最後の砦。
+# 品質基準5条件（正解がない / 経験から答えられる / 専門用語なし / 意見が分かれる / 一言で成立）を
+# 満たす普遍的な問いだけを置く。投票の選択肢を持たないので choice 形式は入れない
+FALLBACK_TOPICS: tuple[FallbackTopic, ...] = (
+    FallbackTopic("最近、思わず時間を忘れて夢中になったことは何ですか？", "experience"),
+    FallbackTopic("最近「これは買ってよかった」と思ったものは何ですか？", "experience"),
+    FallbackTopic("誰かに言われて、今でも覚えている一言は何ですか？", "experience"),
+    FallbackTopic("これだけは譲れない、という自分ルールはありますか？", "values"),
+    FallbackTopic("休みの日って、結局何のためにあると思いますか？", "values"),
+    FallbackTopic("上手な息抜きって、どんなものだと思いますか？", "values"),
+    FallbackTopic("疲れているときにしか出ない、自分のクセってありませんか？", "aruaru"),
+    FallbackTopic("やる気が出ないとき、つい何をしてしまいますか？", "aruaru"),
+    FallbackTopic("自分だけかも、と思っているちょっとした習慣はありますか？", "aruaru"),
+    FallbackTopic("もし1日だけ休みが増えるとしたら、何に使いますか？", "hypothetical"),
+    FallbackTopic("もう一度だけ同じ場所に行けるとしたら、どこを選びますか？", "hypothetical"),
+    FallbackTopic("明日から何か新しいことを始めるなら、何をやってみたいですか？", "hypothetical"),
+)
 
 
 def _load_prompt(name: str) -> str:
@@ -51,6 +80,29 @@ class ReviewResult(BaseModel):
     approved: bool
     failed_criteria: list[str]
     reason: str
+
+
+def fallback_topic(
+    recent_topics: list[str], rng: random.Random | None = None
+) -> TopicResult:
+    """定型お題を1件選ぶ（Gemini を呼ばない純関数）。
+
+    recent_topics と被らない候補から選ぶ。全候補が被る場合は沈黙を避けるため全体から選ぶ
+    （候補は直近保持件数より多いので、通常はここへ落ちない）。
+    """
+    chooser = rng or random
+    candidates = [
+        topic for topic in FALLBACK_TOPICS if topic.topic_question not in recent_topics
+    ] or list(FALLBACK_TOPICS)
+    chosen = chooser.choice(candidates)
+    return TopicResult(
+        extracted_interests=[],
+        lead_in="",
+        topic_question=chosen.topic_question,
+        used_search=False,
+        format=chosen.format,
+        poll_options=None,
+    )
 
 
 def generate_topic(
