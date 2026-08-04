@@ -40,14 +40,16 @@ class FallbackTopic:
 # 定型お題。API キー未設定・Gemini 障害でも「定期お題 bot」の見た目を保つための最後の砦。
 # 品質基準7条件（正解がない / 自分を語れる / 全員が答えを持つ / 考え込まず答えられる / 一言で成立 /
 # 割れても傷つかない / 切り口が具体的）を満たす普遍的な問いだけを置く。
-# 投票の選択肢を持たないので choice 形式は入れない
+# 投票の選択肢を持たないので choice 形式は入れない。
+# 審査を通さずそのまま投稿するので、入れ替えるときは judge に3回連続で通ることを確認する
+# （`uv run python try_judge.py --group B`）
 FALLBACK_TOPICS: tuple[FallbackTopic, ...] = (
     FallbackTopic("最近、思わず時間を忘れて夢中になったことは何ですか？", "experience"),
     FallbackTopic("最近「これは買ってよかった」と思ったものは何ですか？", "experience"),
     FallbackTopic("ここ最近、思わず笑ってしまったことはありましたか？", "experience"),
-    FallbackTopic("これだけは譲れない、という自分ルールはありますか？", "values"),
-    FallbackTopic("休みの日って、結局何のためにあると思いますか？", "values"),
-    FallbackTopic("上手な息抜きって、どんなものだと思いますか？", "values"),
+    FallbackTopic("日曜の夜って、結局『何をする時間』だと思いますか？", "values"),
+    FallbackTopic("金曜の夜って、結局『何をする時間』だと思いますか？", "values"),
+    FallbackTopic("寝る前のふとんの中って、結局『何をする時間』だと思いますか？", "values"),
     FallbackTopic("疲れているときにしか出ない、自分のクセってありませんか？", "aruaru"),
     FallbackTopic("やる気が出ないとき、つい何をしてしまいますか？", "aruaru"),
     FallbackTopic("自分だけかも、と思っているちょっとした習慣はありますか？", "aruaru"),

@@ -263,5 +263,6 @@ Bot 側の設定ではなく、**返信が付くかどうかを左右する運�
 | `store.py` | `state.json` の読み書き（アトミック保存） |
 | `config.py` | `.env` の読み込みと検証 |
 | `try_gemini.py` | Gemini 部の単体確認 CLI |
+| `try_judge.py` | `judge.md` の回帰確認 CLI。固定のお題を審査させて期待合否と突き合わせる |
 | `tests/` | pytest。Discord / Gemini を呼ばないロジックのテスト |
 | `proposal.md` | Bot 運用者向けの組み込み提案資料 |
