@@ -44,15 +44,15 @@ class FallbackTopic:
 # 審査を通さずそのまま投稿するので、入れ替えるときは judge に3回連続で通ることを確認する
 # （`uv run python try_judge.py --group B`）
 FALLBACK_TOPICS: tuple[FallbackTopic, ...] = (
-    FallbackTopic("最近、思わず時間を忘れて夢中になったことは何ですか？", "experience"),
-    FallbackTopic("最近「これは買ってよかった」と思ったものは何ですか？", "experience"),
-    FallbackTopic("ここ最近、思わず笑ってしまったことはありましたか？", "experience"),
+    FallbackTopic("最近つい何度も開いてしまうアプリはありますか？", "experience"),
+    FallbackTopic("ちょっとした空き時間は、だいたい何をして過ごすことが多いですか？", "experience"),
+    FallbackTopic("最近のスマホのカメラロール、どんな写真が多いですか？", "experience"),
     FallbackTopic("日曜の夜って、結局『何をする時間』だと思いますか？", "values"),
-    FallbackTopic("金曜の夜って、結局『何をする時間』だと思いますか？", "values"),
+    FallbackTopic("移動中って、結局『何をする時間』だと思いますか？", "values"),
     FallbackTopic("寝る前のふとんの中って、結局『何をする時間』だと思いますか？", "values"),
     FallbackTopic("疲れているときにしか出ない、自分のクセってありませんか？", "aruaru"),
     FallbackTopic("やる気が出ないとき、つい何をしてしまいますか？", "aruaru"),
-    FallbackTopic("自分だけかも、と思っているちょっとした習慣はありますか？", "aruaru"),
+    FallbackTopic("調べものをしていたはずなのに、つい関係ないページまで見てしまいませんか？", "aruaru"),
     FallbackTopic("もし1日だけ休みが増えるとしたら、何に使いますか？", "hypothetical"),
     FallbackTopic("もし明日の夕食を誰かに作ってもらえるとしたら、何をお願いしますか？", "hypothetical"),
     FallbackTopic("明日から何か新しいことを始めるなら、何をやってみたいですか？", "hypothetical"),
