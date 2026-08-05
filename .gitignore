@@ -12,3 +12,4 @@ wheels/
 # Secrets and runtime state
 .env
 state.json
+state.json.bak
