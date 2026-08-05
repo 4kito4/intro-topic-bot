@@ -69,6 +69,7 @@ def settings():
         owner_user_id=0,
         intro_channel_id=111,
         chat_channel_id=222,
+        news_channel_id=0,  # 既定は無効。ニュースを使うテストだけ上書きする
         # 秘密値が応答に混ざっていないか確かめられるよう、目印になる値を入れておく
         discord_token="DISCORD-TOKEN-SECRET",
         gemini_api_key="GEMINI-KEY-SECRET",
@@ -84,10 +85,15 @@ class BotStub:
         self.settings = settings
         self.saved = 0
         self.logged: list[tuple[str, str, str]] = []
+        self.channels: dict[int, object] = {}
         self._post_lock = asyncio.Lock()
 
     def save(self) -> None:
         self.saved += 1
+
+    def get_channel(self, channel_id: int):
+        """Discord のチャンネル取得。テストが channels に入れたスタブだけを返す。"""
+        return self.channels.get(channel_id)
 
     async def _log_event(self, kind: str, title: str, body: str = "") -> None:
         """運用ログの送信は Discord API を叩くので記録だけする。"""
@@ -101,6 +107,8 @@ class BotStub:
     _report_dry_run = IntroTopicBot._report_dry_run
     _pick_item = IntroTopicBot._pick_item
     _pick_pool_item = IntroTopicBot._pick_pool_item
+    _pick_news_text = IntroTopicBot._pick_news_text
+    _take_source = IntroTopicBot._take_source
     _format_candidates = IntroTopicBot._format_candidates
     _pick_format = IntroTopicBot._pick_format
     _blocked_reason = IntroTopicBot._blocked_reason

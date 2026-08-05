@@ -22,6 +22,7 @@ class Settings:
     gemini_model: str
     intro_channel_id: int
     chat_channel_id: int
+    news_channel_id: int  # 0 ならニュースを素材に使わない
     min_delay_minutes: int
     quiet_minutes: int
     quiet_busy_minutes: int
@@ -90,6 +91,7 @@ def load_settings() -> Settings:
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash").strip(),
         intro_channel_id=_require_int("INTRO_CHANNEL_ID"),
         chat_channel_id=_require_int("CHAT_CHANNEL_ID"),
+        news_channel_id=_require_int("NEWS_CHANNEL_ID", 0),
         min_delay_minutes=_require_int("MIN_DELAY_MINUTES", 30),
         quiet_minutes=_require_int("QUIET_MINUTES", 15),
         quiet_busy_minutes=_require_int("QUIET_BUSY_MINUTES", 45),

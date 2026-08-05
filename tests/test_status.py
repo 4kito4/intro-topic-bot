@@ -64,7 +64,13 @@ def test_チャンネルIDを出す(settings):
     text = _format_status_summary(settings, State())
     assert "投稿先=222" in text
     assert "自己紹介=111" in text
+    assert "ニュース=なし" in text
     assert "運用ログ=なし" in text
+
+
+def test_ニュースチャンネルを設定していればIDを出す(settings):
+    text = _format_status_summary(_with(settings, news_channel_id=333), State())
+    assert "ニュース=333" in text
 
 
 def test_投稿タイミングを出す(settings):

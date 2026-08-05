@@ -50,6 +50,15 @@ RECENT_TOPICS_KEPT = 10  # 多様性確保のためプロンプトに渡す直�
 RECENT_FORMATS_AVOIDED = 2  # 次のお題形式を選ぶときに避ける直近形式の件数
 FALLBACK_SOURCE = "定型"  # 内蔵の定型お題を投稿したときのログ・応答に出す種別
 
+# ニュース素材（NEWS_CHANNEL_ID を設定したときだけ使う）。
+# 運用で調整する値ではないのでモジュール定数にする（.env に出さない）
+NEWS_FETCH_LIMIT = 10  # ニュースチャンネルを遡って本文を探す件数
+NEWS_MAX_AGE_DAYS = 3  # これより古い投稿は「直近のニュース」とみなさない
+NEWS_TEXT_MAX = 1000  # 生成プロンプトへ渡すニュース本文の上限
+NEWS_SOURCE = "ニュース"  # ニュースからお題を作ったときのログ・応答に出す種別
+# 元メッセージを取り直せなかった周回の応答。本文を失わないよう破棄せず次の周回に回す
+SKIP_SUMMARY = "投稿を見送りました: 元の自己紹介を再取得できませんでした"
+
 # Discord の投票の制約（question 300 文字 / answer 55 文字 / 選択肢は最大10件）
 POLL_DURATION = timedelta(hours=48)
 POLL_QUESTION_MAX_LEN = 300
@@ -325,6 +334,7 @@ def _format_status_summary(settings: Settings, state: State) -> str:
         "**モード**: " + " / ".join(modes),
         f"**チャンネル**: 投稿先={settings.chat_channel_id} / "
         f"自己紹介={settings.intro_channel_id} / "
+        f"ニュース={settings.news_channel_id or 'なし'} / "
         f"運用ログ={settings.log_channel_id or 'なし'}",
         f"**投稿タイミング**: 間隔{settings.post_interval_hours}時間 / "
         f"{settings.post_window_start}〜{settings.post_window_end}時 JST / "
@@ -378,6 +388,19 @@ def _backfill_verdict(
     if verdict == "too_short":
         return "short"
     return "ok"
+
+
+def _news_message_text(message: discord.Message) -> str:
+    """ニュース投稿から素材にする本文を取り出す（Discord API を叩かない）。
+
+    ニュースが本文で流れるか embed で流れるかは運用者のサーバー次第なので両方を拾い、
+    空の要素は行ごと飛ばして連結する。
+    """
+    parts = [message.content]
+    for embed in message.embeds:
+        parts.append(embed.title or "")
+        parts.append(embed.description or "")
+    return "\n".join(part for part in (p.strip() for p in parts) if part)
 
 
 class IntroTopicBot(discord.Client):
@@ -595,25 +618,37 @@ class IntroTopicBot(discord.Client):
         if not self.settings.gemini_api_key:
             # 定型お題モード。自己紹介は読めないのでキュー・プールは消費しない
             return await self._post_fallback("GEMINI_API_KEY が未設定")
-        # 優先順位: 新規キュー → 再利用プール → 自己紹介を使わない汎用お題。
+        # 優先順位: 新規キュー → 未使用プール → ニュース → 再利用プール → 汎用お題。
+        # 全員の自己紹介を必ず1回は使った上で、古い素材の使い回しより新鮮なニュースを優先する。
         # 生成直前に元メッセージを取り直し、破棄された候補はその周回のうちに次へ送る
-        chosen: QueueItem | PoolItem | None = None
-        for candidate in (self._pick_item(), self._pick_pool_item()):
-            if candidate is None:
-                continue
-            outcome = await self._refresh_source(candidate)
-            if outcome == "skip":
-                logger.debug("投稿見送り: 元メッセージを再取得できなかった")
-                return "投稿を見送りました: 元の自己紹介を再取得できませんでした"
-            if outcome == "ok":
-                chosen = candidate
-                break
+        chosen, skipped = await self._take_source(self._pick_item())
+        if skipped:
+            return SKIP_SUMMARY
+        # プールの候補は1周回につき1件だけ試す。未使用（used_count==0）ならここで使い、
+        # 使用済みならニュースが取れなかったときの控えとして残す
+        pool_candidate = self._pick_pool_item() if chosen is None else None
+        news: tuple[str, int] | None = None
+        if pool_candidate is not None and pool_candidate.used_count == 0:
+            chosen, skipped = await self._take_source(pool_candidate)
+            if skipped:
+                return SKIP_SUMMARY
+            pool_candidate = None  # 採用済み or 破棄済みなので控えには回さない
+        if chosen is None:
+            news = await self._pick_news_text()
+            if news is None and pool_candidate is not None:
+                chosen, skipped = await self._take_source(pool_candidate)
+                if skipped:
+                    return SKIP_SUMMARY
         item = chosen if isinstance(chosen, QueueItem) else None
         pool_item = chosen if isinstance(chosen, PoolItem) else None
+        news_text: str | None = None
         if item is not None:
             source, source_id, intro_text = "新規", item.message_id, item.content
         elif pool_item is not None:
             source, source_id, intro_text = "プール", pool_item.message_id, pool_item.content
+        elif news is not None:
+            news_text, news_id = news
+            source, source_id, intro_text = NEWS_SOURCE, news_id, None
         else:
             source, source_id, intro_text = "汎用", None, None
         required_format = self._pick_format()
@@ -626,10 +661,11 @@ class IntroTopicBot(discord.Client):
                 self.state.posted_topics[-RECENT_TOPICS_KEPT:],
                 required_format,
                 self._good_examples(),
+                news_text=news_text,
             )
         except Exception:
             if item is None:
-                # プール由来・汎用由来は捨てるものがないのでリトライ管理は不要
+                # プール・ニュース・汎用由来は捨てるものがないのでリトライ管理は不要
                 logger.exception("話題生成に失敗 (種別=%s, message_id=%s)", source, source_id)
                 return (
                     f"お題の生成に失敗しました (種別={source})\n"
@@ -995,6 +1031,21 @@ class IntroTopicBot(discord.Client):
         )
         return [topic for _, topic in ranked[:GOOD_EXAMPLES_KEPT]]
 
+    async def _take_source(
+        self, candidate: QueueItem | PoolItem | None
+    ) -> tuple[QueueItem | PoolItem | None, bool]:
+        """候補の元メッセージを取り直し、この周回で使ってよいか判定する。
+
+        戻り値: (使える候補。使えないなら None, 今回の投稿を見送るか)
+        """
+        if candidate is None:
+            return None, False
+        outcome = await self._refresh_source(candidate)
+        if outcome == "skip":
+            logger.debug("投稿見送り: 元メッセージを再取得できなかった")
+            return None, True
+        return (candidate if outcome == "ok" else None), False
+
     async def _refresh_source(self, source: QueueItem | PoolItem) -> RefreshOutcome:
         """生成直前に元メッセージを1件だけ取り直し、削除・編集・オプトアウトに追随する。
 
@@ -1119,6 +1170,39 @@ class IntroTopicBot(discord.Client):
             return None
         # last_used_at が None（未使用）は空文字扱いになり最優先で選ばれる
         return min(self.state.intro_pool, key=lambda p: (p.used_count, p.last_used_at or ""))
+
+    async def _pick_news_text(self) -> tuple[str, int] | None:
+        """ニュースチャンネルの直近投稿から素材を1件選ぶ。使えなければ None。
+
+        戻り値: (プロンプトへ渡す本文, 元メッセージ ID)。
+        state には何も書かない: ニュースは使い捨てで再利用プール・processed_ids に入れない。
+        本文を保持しないのでプライバシー配慮の自動削除の対象にならず、同じニュースを二度使う
+        可能性は「投稿間隔48時間 × 毎日配信 × 直近お題との重複禁止」で実用上抑えられる。
+        """
+        if not self.settings.news_channel_id:
+            return None
+        channel = self.get_channel(self.settings.news_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            logger.warning(
+                "ニュースチャンネルが見つかりません: %s", self.settings.news_channel_id
+            )
+            return None
+        after = now_utc() - timedelta(days=NEWS_MAX_AGE_DAYS)
+        try:
+            # after を指定すると oldest_first の既定が True になるため、新しい順を明示する
+            async for message in channel.history(
+                limit=NEWS_FETCH_LIMIT, after=after, oldest_first=False
+            ):
+                # ニュースは webhook / bot が投稿するのが普通なので author.bot で除外しない
+                text = _news_message_text(message)
+                if text:
+                    return _truncate(text, NEWS_TEXT_MAX), message.id
+        except discord.HTTPException as exc:  # Forbidden もここに含まれる
+            # ニュースは必須の素材ではないので、汎用お題へ静かに落とす
+            logger.warning("ニュースを取得できないため今回は使いません: %s", exc)
+            return None
+        logger.info("直近%d日のニュースに使える本文がありませんでした", NEWS_MAX_AGE_DAYS)
+        return None
 
     def _format_candidates(self) -> list[TopicFormat]:
         """次に使えるお題形式の候補を返す。"""
