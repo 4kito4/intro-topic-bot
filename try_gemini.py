@@ -1,8 +1,9 @@
 """topic_generator を Discord なしで単体確認する CLI。
 
 使い方:
-    uv run python try_gemini.py            # 内蔵サンプルで5形式を1周
-    uv run python try_gemini.py "自己紹介文"  # 任意テキストで実行
+    uv run python try_gemini.py                  # 内蔵サンプルで5形式を1周
+    uv run python try_gemini.py "自己紹介文"       # 任意テキストで実行
+    uv run python try_gemini.py --news "ニュース本文"  # ニュースを素材に実行
 """
 
 from __future__ import annotations
@@ -77,8 +78,19 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     api_key, model = load_gemini_only_settings()
 
-    if len(sys.argv) > 1:
-        text = " ".join(sys.argv[1:])
+    args = sys.argv[1:]
+    if args and args[0] == "--news":
+        news = " ".join(args[1:])
+        if not news:
+            print("--news の後にニュース本文を渡してください")
+            return
+        # ニュース経路は自己紹介を参照しない（intro_text=None）
+        result, review = generate_topic(None, api_key, model, news_text=news)
+        show("ニュース", result, review)
+        return
+
+    if args:
+        text = " ".join(args)
         result, review = generate_topic(text, api_key, model)
         show("自由入力", result, review)
         return

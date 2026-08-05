@@ -115,6 +115,7 @@ def generate_topic(
     recent_topics: list[str] | None = None,
     required_format: TopicFormat | None = None,
     good_examples: list[str] | None = None,
+    news_text: str | None = None,
 ) -> tuple[TopicResult, ReviewResult | None]:
     """自己紹介文から話題を生成する。API 失敗時は例外を送出する（呼び出し側でリトライ管理）。
 
@@ -122,10 +123,14 @@ def generate_topic(
     recent_topics: 直近に投稿したお題。テーマ・形式の重複を避けるためにプロンプトへ渡す。
     required_format: 今回書かせるお題の形式。None ならモデルに任せる。
     good_examples: 実際に反応が良かったお題。few-shot としてプロンプトへ渡す。
+    news_text: 素材にするニュース本文。指定時は intro_text を無視して
+        ニュースを入口にしたお題を作る。
     戻り値: (生成結果, 審査結果)。審査自体が失敗した場合の審査結果は None。
     """
     client = genai.Client(api_key=api_key)
-    prompt = _build_prompt(intro_text, recent_topics, required_format, good_examples)
+    prompt = _build_prompt(
+        intro_text, recent_topics, required_format, good_examples, news_text
+    )
 
     result = _generate(client, model, prompt)
     review = _review_or_none(client, model, result, required_format)
@@ -154,8 +159,23 @@ def _build_prompt(
     recent_topics: list[str] | None,
     required_format: TopicFormat | None,
     good_examples: list[str] | None,
+    news_text: str | None = None,
 ) -> str:
-    if intro_text is None:
+    if news_text is not None:
+        # ニュースは「話題の入口」であって問いの対象ではない。技術の是非を問うと
+        # 知識のある人しか答えられなくなるので、日常の経験・感覚へ引き取らせる
+        prompt = (
+            "次のニュースを入口に、サーバー全体向けのお題を作ってください。"
+            "ニュースの技術的な内容・是非・感想を問うのではなく、ニュースが触れている話題を、"
+            "誰もが自分の日常の経験・感覚で答えられる問いに置き換えること"
+            "（例: 新しい AI モデルの発表 → 技術の評価ではなく"
+            "「AI にはまだ任せたくないこと、ありますか？」）。"
+            "ニュースの固有名詞・専門用語は topic_question に入れない"
+            "（lead_in で軽く触れるのは可）。"
+            "extracted_interests は空リストにしてください。\n\n"
+            f"---\n{news_text}\n---"
+        )
+    elif intro_text is None:
         prompt = (
             "自己紹介文はありません。サーバー（学生コミュニティで、AI に興味がある人が多い）"
             "全体に向けた一般的なお題を作ってください。"
