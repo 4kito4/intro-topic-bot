@@ -131,14 +131,27 @@ def _compose_body(title: str, lead_in: str, question: str | None, footer: str) -
     return "\n".join(line for line in lines if line)
 
 
+def _title_with_theme(title: str, theme: str) -> str:
+    """見出し行。テーマ語があれば「見出し：テーマ語」にする。
+
+    通知とチャンネル一覧のプレビューには本文の先頭しか出ないので、そこに何の話かを
+    載せるための結合。TOPIC_TITLE は運用者が変えられるため、どんな見出しでも成立する
+    書式にする。theme が空（モデルが返さなかった回・定型お題の想定外）なら従来の見出しだけ。
+    """
+    theme = theme.strip()
+    return f"{title}：{theme}" if theme else title
+
+
 def _compose_text_body(result: TopicResult, title: str, footer: str = "") -> str:
     """通常投稿の本文。問いは太字にして目に留まりやすくする。"""
-    return _compose_body(title, result.lead_in, result.topic_question, footer)
+    return _compose_body(
+        _title_with_theme(title, result.theme), result.lead_in, result.topic_question, footer
+    )
 
 
 def _compose_poll_header(result: TopicResult, title: str, footer: str = "") -> str:
     """投票として投稿するときの本文。問いは投票側に入るので本文には入れない。"""
-    return _compose_body(title, result.lead_in, None, footer)
+    return _compose_body(_title_with_theme(title, result.theme), result.lead_in, None, footer)
 
 
 def _with_role_mention(body: str, role_id: int) -> str:
