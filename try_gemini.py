@@ -60,9 +60,10 @@ def show(
     else:
         verdict = "合格" if review.approved else f"不合格 ({', '.join(review.failed_criteria)})"
         print(f"審査: {verdict} — {review.reason}")
-    # 実際の投稿は TOPIC_TITLE / TOPIC_FOOTER で変えられるが、ここは既定タイトルで表示する
+    # 実際の投稿は TOPIC_TITLE / TOPIC_FOOTER で変えられるが、ここは既定タイトルで表示する。
+    # 見出しは bot 側でテーマ語と結合されるので、その形（theme が空なら見出しだけ）を再現する
     print("--- 投稿イメージ ---")
-    print(DEFAULT_TOPIC_TITLE)
+    print(f"{DEFAULT_TOPIC_TITLE}：{result.theme}" if result.theme else DEFAULT_TOPIC_TITLE)
     if result.lead_in:
         print(result.lead_in)
     print(f"**{result.topic_question}**")

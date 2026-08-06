@@ -35,6 +35,7 @@ class FallbackTopic:
 
     topic_question: str
     format: TopicFormat
+    theme: str  # 見出し「今日のお題：◯◯」に入るテーマ語（審査を通さないので手で付ける）
 
 
 # 定型お題。API キー未設定・Gemini 障害でも「定期お題 bot」の見た目を保つための最後の砦。
@@ -42,20 +43,21 @@ class FallbackTopic:
 # 割れても傷つかない / 切り口が具体的）を満たす普遍的な問いだけを置く。
 # 投票の選択肢を持たないので choice 形式は入れない。
 # 審査を通さずそのまま投稿するので、入れ替えるときは judge に3回連続で通ることを確認する
-# （`uv run python try_judge.py --group B`）
+# （`uv run python try_judge.py --group B`）。theme も審査を通らないので、問いの題材を表す
+# 2〜8字の一般名詞句を手で付ける（見出しに出るため、長い語・専門用語は入れない）
 FALLBACK_TOPICS: tuple[FallbackTopic, ...] = (
-    FallbackTopic("最近つい何度も開いてしまうアプリはありますか？", "experience"),
-    FallbackTopic("ちょっとした空き時間は、だいたい何をして過ごすことが多いですか？", "experience"),
-    FallbackTopic("最近のスマホのカメラロール、どんな写真が多いですか？", "experience"),
-    FallbackTopic("日曜の夜って、結局『何をする時間』だと思いますか？", "values"),
-    FallbackTopic("移動中って、結局『何をする時間』だと思いますか？", "values"),
-    FallbackTopic("寝る前のふとんの中って、結局『何をする時間』だと思いますか？", "values"),
-    FallbackTopic("疲れているときにしか出ない、自分のクセってありませんか？", "aruaru"),
-    FallbackTopic("やる気が出ないとき、つい何をしてしまいますか？", "aruaru"),
-    FallbackTopic("調べものをしていたはずなのに、つい関係ないページまで見てしまいませんか？", "aruaru"),
-    FallbackTopic("もし1日だけ休みが増えるとしたら、何に使いますか？", "hypothetical"),
-    FallbackTopic("もし明日の夕食を誰かに作ってもらえるとしたら、何をお願いしますか？", "hypothetical"),
-    FallbackTopic("明日から何か新しいことを始めるなら、何をやってみたいですか？", "hypothetical"),
+    FallbackTopic("最近つい何度も開いてしまうアプリはありますか？", "experience", "スマホの中身"),
+    FallbackTopic("ちょっとした空き時間は、だいたい何をして過ごすことが多いですか？", "experience", "空き時間"),
+    FallbackTopic("最近のスマホのカメラロール、どんな写真が多いですか？", "experience", "カメラロール"),
+    FallbackTopic("日曜の夜って、結局『何をする時間』だと思いますか？", "values", "日曜の夜"),
+    FallbackTopic("移動中って、結局『何をする時間』だと思いますか？", "values", "移動時間"),
+    FallbackTopic("寝る前のふとんの中って、結局『何をする時間』だと思いますか？", "values", "寝る前の時間"),
+    FallbackTopic("疲れているときにしか出ない、自分のクセってありませんか？", "aruaru", "疲れたときのクセ"),
+    FallbackTopic("やる気が出ないとき、つい何をしてしまいますか？", "aruaru", "やる気が出ない日"),
+    FallbackTopic("調べものをしていたはずなのに、つい関係ないページまで見てしまいませんか？", "aruaru", "調べもの中の脱線"),
+    FallbackTopic("もし1日だけ休みが増えるとしたら、何に使いますか？", "hypothetical", "休みの使い道"),
+    FallbackTopic("もし明日の夕食を誰かに作ってもらえるとしたら、何をお願いしますか？", "hypothetical", "明日の夕食"),
+    FallbackTopic("明日から何か新しいことを始めるなら、何をやってみたいですか？", "hypothetical", "始めたいこと"),
 )
 
 
@@ -77,6 +79,10 @@ class TopicResult(BaseModel):
     used_search: bool
     format: TopicFormat
     poll_options: list[str] | None = None  # choice 形式のときだけ投票の選択肢が入る
+    # 見出し「今日のお題：◯◯」に入るテーマ語。judge は theme を審査しないので、品質は
+    # system.md の禁止事項と try_gemini.py の目視で担保する。既定を空にして、
+    # モデルが返さなかった回は従来どおり見出しだけで投稿できるようにする
+    theme: str = ""
 
 
 class ReviewResult(BaseModel):
@@ -105,6 +111,7 @@ def fallback_topic(
         used_search=False,
         format=chosen.format,
         poll_options=None,
+        theme=chosen.theme,
     )
 
 

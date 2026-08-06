@@ -13,9 +13,10 @@ import pytest
 import bot as botmod
 from bot import RECENT_TOPICS_KEPT
 from store import State
-from topic_generator import FALLBACK_TOPICS, TOPIC_FORMATS, fallback_topic
+from topic_generator import FALLBACK_TOPICS, TOPIC_FORMATS, TopicResult, fallback_topic
 
 QUESTIONS = [topic.topic_question for topic in FALLBACK_TOPICS]
+THEME_MAX_LEN = 8  # 見出しに並べる語なので system.md と同じ上限で縛る
 
 
 def _boom(*args, **kwargs):
@@ -50,6 +51,13 @@ def test_お題は問いかけの体裁になっている(topic):
     assert topic.topic_question.endswith("？")
 
 
+@pytest.mark.parametrize("topic", FALLBACK_TOPICS, ids=lambda t: t.topic_question)
+def test_見出しに出すテーマ語が付いている(topic):
+    # 定型お題は審査を通らないので、テーマ語の長さだけはテストで担保する
+    assert 2 <= len(topic.theme) <= THEME_MAX_LEN
+    assert not topic.theme.endswith("？")
+
+
 # --- fallback_topic -------------------------------------------------------
 
 
@@ -75,6 +83,24 @@ def test_全候補が直近と被るなら全体から選ぶ():
 def test_乱数を渡せば結果が決まる():
     picked = [fallback_topic([], random.Random(7)).topic_question for _ in range(3)]
     assert len(set(picked)) == 1
+
+
+def test_選んだお題のテーマ語がそのまま渡る():
+    result = fallback_topic([], random.Random(7))
+    chosen = next(t for t in FALLBACK_TOPICS if t.topic_question == result.topic_question)
+    assert result.theme == chosen.theme
+
+
+def test_テーマ語は指定しなければ空になる():
+    # モデルが theme を返さない回でも組み立てが壊れないようにするための既定値
+    result = TopicResult(
+        extracted_interests=[],
+        lead_in="",
+        topic_question="最近撮った写真は？",
+        used_search=False,
+        format="experience",
+    )
+    assert result.theme == ""
 
 
 # --- 投稿経路 -------------------------------------------------------------
