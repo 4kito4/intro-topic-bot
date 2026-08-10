@@ -40,7 +40,8 @@ cp .env.example .env
 | `DISCORD_TOKEN` | 必須 | Bot トークン。未設定だと起動時にエラーで止まります |
 | `INTRO_CHANNEL_ID` | 必須 | `#自己紹介` のチャンネル ID |
 | `CHAT_CHANNEL_ID` | 必須 | お題を投下する `#雑談` のチャンネル ID |
-| `OWNER_USER_ID` | 事実上必須 | `/topic` を実行できる運用者のユーザー ID。未設定だと誰も管理コマンドを使えません |
+| `OWNER_USER_ID` | 事実上必須 | `/topic` を実行できる運用者のユーザー ID。`OWNER_ROLE_ID` と両方未設定だと誰も管理コマンドを使えません |
+| `OWNER_ROLE_ID` | 任意 | `/topic` を実行できる運用ロールの ID（上記との OR 判定）。運営が複数人いる場合に使います |
 | `LOG_CHANNEL_ID` | 推奨 | 運用ログの投下先。起動通知・投稿通知・異常がここに流れます。リモートで動かす場合、状態を知る唯一の窓口になります |
 | `GEMINI_API_KEY` | 任意 | 未設定だと定型お題モード（自己紹介を読まず、内蔵のお題だけを投稿） |
 
@@ -142,7 +143,7 @@ journalctl -u intro-topic-bot -f
 1. リポジトリを GitHub へ置く（**`.env` はコミットしない**）
 2. PaaS 側で「GitHub リポジトリからデプロイ」を選ぶ。リポジトリ直下に `Dockerfile` があるので自動検出されます（ビルダーの選択を求められたら Dockerfile を選ぶ）
 3. **永続ボリュームを作成し、マウント先を `/data` にする**
-4. 環境変数に `.env` の中身を移す（`DISCORD_TOKEN` / `INTRO_CHANNEL_ID` / `CHAT_CHANNEL_ID` / `OWNER_USER_ID` / `LOG_CHANNEL_ID` / `GEMINI_API_KEY` など）。あわせて **`STATE_PATH=/data/state.json` も明示的に登録**する（イメージの既定値と同じですが、画面に出しておくとボリュームの付け忘れに気づけます）
+4. 環境変数に `.env` の中身を移す（`DISCORD_TOKEN` / `INTRO_CHANNEL_ID` / `CHAT_CHANNEL_ID` / `OWNER_USER_ID` / `OWNER_ROLE_ID` / `LOG_CHANNEL_ID` / `GEMINI_API_KEY` など）。あわせて **`STATE_PATH=/data/state.json` も明示的に登録**する（イメージの既定値と同じですが、画面に出しておくとボリュームの付け忘れに気づけます）
 5. デプロイ後、PaaS のログとログチャンネルの起動通知を確認する
 
 注意点:

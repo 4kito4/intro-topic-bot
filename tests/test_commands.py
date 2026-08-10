@@ -6,10 +6,18 @@ interaction のやり取りはコマンドのガワ側にあり Discord API を�
 
 from __future__ import annotations
 
-from intro_topic.cog import _authorization_error, _format_queue_summary, _format_stats_summary
+from types import SimpleNamespace
+
+from intro_topic.cog import (
+    _authorization_error,
+    _format_queue_summary,
+    _format_stats_summary,
+    _role_ids,
+)
 from intro_topic.store import PendingMeasurement, State, TopicStat
 
 OWNER = 42
+OWNER_ROLE = 777
 MEASURED_AT = "2026-07-30T11:00:00+00:00"
 
 
@@ -28,25 +36,76 @@ def _stat(topic="お題", fmt="choice", *, replies=0, reactions=0, votes=0, at_h
 # --- 認可 -----------------------------------------------------------------
 
 
-def test_オーナー本人だけが実行できる():
-    assert _authorization_error(OWNER, OWNER) is None
+def _auth(user_id, *, roles=(), owner=OWNER, owner_role=0):
+    return _authorization_error(user_id, roles, owner, owner_role)
+
+
+def test_オーナー本人は実行できる():
+    assert _auth(OWNER) is None
 
 
 def test_他人には理由を返す():
-    error = _authorization_error(999, OWNER)
+    error = _auth(999)
     assert error is not None
     assert "運用者" in error
 
 
-def test_オーナー未設定なら設定方法を返す():
-    error = _authorization_error(999, 0)
+def test_どちらも未設定なら設定方法を返す():
+    error = _auth(999, owner=0)
     assert error is not None
     assert "OWNER_USER_ID" in error
+    assert "OWNER_ROLE_ID" in error
 
 
-def test_オーナー未設定ならオーナー本人でも実行できない():
+def test_どちらも未設定ならオーナー本人でも実行できない():
     # OWNER_USER_ID=0 と user_id が偶然一致する事故を防ぐ
-    assert _authorization_error(0, 0) is not None
+    assert _auth(0, owner=0) is not None
+
+
+# --- 認可: 運用ロール -----------------------------------------------------
+
+
+def test_運用ロールを持っていれば実行できる():
+    assert _auth(999, roles=(OWNER_ROLE,), owner_role=OWNER_ROLE) is None
+
+
+def test_複数ロールのうち1つが一致すれば実行できる():
+    assert _auth(999, roles=(123, OWNER_ROLE, 456), owner_role=OWNER_ROLE) is None
+
+
+def test_運用ロールを持たない他人は実行できない():
+    error = _auth(999, roles=(123, 456), owner_role=OWNER_ROLE)
+    assert error is not None
+    assert "運用者" in error
+
+
+def test_ロールを設定してもオーナー本人は実行できる():
+    # 後方互換: OWNER_USER_ID だけの設定はこれまでどおり
+    assert _auth(OWNER, owner_role=OWNER_ROLE) is None
+    assert _auth(OWNER, roles=(123,), owner_role=OWNER_ROLE) is None
+
+
+def test_ユーザー未設定でも運用ロールだけで運用できる():
+    assert _auth(999, roles=(OWNER_ROLE,), owner=0, owner_role=OWNER_ROLE) is None
+    assert _auth(999, roles=(123,), owner=0, owner_role=OWNER_ROLE) is not None
+
+
+def test_ロール未設定なら役職IDが0でも一致しない():
+    # OWNER_ROLE_ID=0 とロール ID が偶然一致する事故を防ぐ
+    assert _auth(999, roles=(0,)) is not None
+
+
+# --- 認可: 実行者からロール ID を取り出す ---------------------------------
+
+
+def test_メンバーならロールIDを並べる():
+    member = SimpleNamespace(id=1, roles=[SimpleNamespace(id=11), SimpleNamespace(id=22)])
+    assert _role_ids(member) == [11, 22]
+
+
+def test_ロールを持たない実行者は空リスト():
+    # guild_only だが型の上では User（roles を持たない）になりうるので落とさない
+    assert _role_ids(SimpleNamespace(id=1)) == []
 
 
 # --- /topic stats ---------------------------------------------------------

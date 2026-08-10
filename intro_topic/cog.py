@@ -242,16 +242,34 @@ def _startup_summary(state: State, dry_run: bool) -> str:
     return f"DRY_RUN={dry_run} / paused={state.paused} / キュー{len(state.queue)}件"
 
 
-def _authorization_error(user_id: int, owner_user_id: int) -> str | None:
-    """管理コマンドを実行してよいか判定する。駄目なら理由（実行者に返す文面）を返す。"""
-    if owner_user_id == 0:
+def _role_ids(user: discord.User | discord.Member) -> list[int]:
+    """実行者が持つロールの ID。
+
+    `/topic` は guild_only なので実行者は通常 Member だが、型の上では User になる経路が
+    残る（ロールという概念がない）。その場合はロール無しとして扱い、落とさない。
+    """
+    return [role.id for role in getattr(user, "roles", ())]
+
+
+def _authorization_error(
+    user_id: int, role_ids: Sequence[int], owner_user_id: int, owner_role_id: int
+) -> str | None:
+    """管理コマンドを実行してよいか判定する。駄目なら理由（実行者に返す文面）を返す。
+
+    `OWNER_USER_ID` 本人か、`OWNER_ROLE_ID` のロールを持つメンバーなら実行できる（OR 判定）。
+    運営が複数人いる場合はロール側だけを設定する運用もできる。
+    未設定（0）の側は一致判定に使わない: ID が 0 の実行者・ロールと偶然一致する事故を防ぐため。
+    """
+    if owner_user_id == 0 and owner_role_id == 0:
         return (
-            "OWNER_USER_ID が未設定のため管理コマンドを使えません。"
-            ".env に運用者のユーザー ID を設定して Bot を再起動してください。"
+            "OWNER_USER_ID / OWNER_ROLE_ID がどちらも未設定のため管理コマンドを使えません。"
+            "運用者のユーザー ID か運用ロールの ID を設定して Bot を再起動してください。"
         )
-    if user_id != owner_user_id:
-        return "このコマンドは Bot の運用者だけが実行できます。"
-    return None
+    if owner_user_id != 0 and user_id == owner_user_id:
+        return None
+    if owner_role_id != 0 and owner_role_id in role_ids:
+        return None
+    return "このコマンドは Bot の運用者だけが実行できます。"
 
 
 def _jst_text(when: datetime) -> str:
@@ -352,6 +370,9 @@ def _format_status_summary(settings: Settings, state: State) -> str:
         f"自己紹介={settings.intro_channel_id} / "
         f"ニュース={settings.news_channel_id or 'なし'} / "
         f"運用ログ={settings.log_channel_id or 'なし'}",
+        # 運営が複数人のとき「自分が実行できる側にいるか」をここで確かめられるようにする
+        f"**管理コマンドの実行者**: ユーザー={settings.owner_user_id or '未設定'} / "
+        f"運用ロール={settings.owner_role_id or 'なし'}",
         f"**投稿タイミング**: 間隔{settings.post_interval_hours}時間 / "
         f"{settings.post_window_start}〜{settings.post_window_end}時 JST / "
         f"検知から{settings.min_delay_minutes}分後以降",
@@ -481,8 +502,11 @@ class IntroTopicCog(commands.Cog, name=COG_NAME):
                 "GEMINI_API_KEY が未設定のため定型お題モードで動作します"
                 "（自己紹介は読まず、内蔵のお題だけを投稿します）"
             )
-        if self.settings.owner_user_id == 0:
-            logger.warning("OWNER_USER_ID が未設定です。/topic コマンドは誰も実行できません")
+        if self.settings.owner_user_id == 0 and self.settings.owner_role_id == 0:
+            logger.warning(
+                "OWNER_USER_ID / OWNER_ROLE_ID がどちらも未設定です。"
+                "/topic コマンドは誰も実行できません"
+            )
         await self.log_event(
             "info", "起動しました", _startup_summary(self.state, self.settings.dry_run)
         )
@@ -1286,8 +1310,12 @@ class IntroTopicCog(commands.Cog, name=COG_NAME):
 class TopicCommands(app_commands.Group):
     """運用者向けの管理コマンド。
 
-    Manage Server 権限を持たないメンバーには一覧に出さず（ステルス設計の維持）、
-    実行できるのは OWNER_USER_ID 本人だけ。応答はすべて ephemeral で本人にしか見えない。
+    表示層（一覧に出すか）と実行層（実際に実行できるか）は別物にしている:
+    - 表示: Manage Server 権限を持たないメンバーには一覧に出さない（ステルス設計の維持）
+    - 実行: OWNER_USER_ID 本人、または OWNER_ROLE_ID のロールを持つメンバー
+    そのため OWNER_ROLE_ID のロールが Manage Server を持たない場合、実行は許可されても
+    一覧には出ない（サーバー設定 > 連携サービス で表示側を上書きできる）。
+    応答はすべて ephemeral で本人にしか見えない。
     """
 
     def __init__(self, cog: IntroTopicCog) -> None:
@@ -1301,7 +1329,13 @@ class TopicCommands(app_commands.Group):
 
     async def _denied(self, interaction: discord.Interaction) -> bool:
         """実行者に権限がなければ理由を ephemeral で返して True。無言では終わらせない。"""
-        error = _authorization_error(interaction.user.id, self.cog.settings.owner_user_id)
+        settings = self.cog.settings
+        error = _authorization_error(
+            interaction.user.id,
+            _role_ids(interaction.user),
+            settings.owner_user_id,
+            settings.owner_role_id,
+        )
         if error is None:
             return False
         logger.info("権限のない管理コマンド実行: user_id=%s", interaction.user.id)

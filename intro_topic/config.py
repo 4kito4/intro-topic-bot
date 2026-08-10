@@ -55,6 +55,7 @@ class Settings:
     dry_run: bool
     log_channel_id: int
     owner_user_id: int
+    owner_role_id: int  # 0 ならロールによる許可なし（OWNER_USER_ID との OR 判定）
     state_path: Path
 
 
@@ -136,6 +137,7 @@ def load_settings() -> Settings:
         dry_run=_require_bool("DRY_RUN", False),
         log_channel_id=_require_int("LOG_CHANNEL_ID", 0),
         owner_user_id=_require_int("OWNER_USER_ID", 0),
+        owner_role_id=_require_int("OWNER_ROLE_ID", 0),
         state_path=Path(os.environ.get("STATE_PATH", "").strip() or DEFAULT_STATE_PATH),
     )
 

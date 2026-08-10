@@ -73,6 +73,21 @@ def test_ニュースチャンネルを設定していればIDを出す(settings
     assert "ニュース=333" in text
 
 
+def test_管理コマンドの実行者を出す(settings):
+    # 運営が複数人のとき「自分が実行できる側にいるか」を Discord 上から確かめられるように
+    text = _format_status_summary(
+        _with(settings, owner_user_id=42, owner_role_id=777), State()
+    )
+    assert "ユーザー=42" in text
+    assert "運用ロール=777" in text
+
+
+def test_実行者が未設定なら未設定と出す(settings):
+    text = _format_status_summary(settings, State())  # どちらも 0
+    assert "ユーザー=未設定" in text
+    assert "運用ロール=なし" in text
+
+
 def test_投稿タイミングを出す(settings):
     text = _format_status_summary(settings, State())
     assert "間隔48時間" in text

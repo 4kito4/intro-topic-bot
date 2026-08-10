@@ -55,7 +55,7 @@ Copy-Item .env.example .env
 ```
 
 `.env` を開き、`DISCORD_TOKEN` / `INTRO_CHANNEL_ID` / `CHAT_CHANNEL_ID` を記入（この3つは必須。未設定だと起動時にエラーで止まります）。
-自己紹介からお題を作らせるなら `GEMINI_API_KEY`（未設定なら定型お題モード）、管理コマンドを使うなら `OWNER_USER_ID`（自分のユーザー ID。未設定だと `/topic` は誰も実行できません）も設定します。
+自己紹介からお題を作らせるなら `GEMINI_API_KEY`（未設定なら定型お題モード）、管理コマンドを使うなら `OWNER_USER_ID`（自分のユーザー ID）も設定します。運営が複数人いる場合は `OWNER_ROLE_ID`（運用ロールの ID）でも許可でき、両方とも未設定だと `/topic` は誰も実行できません。
 毎日ニュースが流れるチャンネルがあるなら `NEWS_CHANNEL_ID`（任意。既定は空 / 0 で無効。設定すると未使用の自己紹介を使い切った回に、そのチャンネルの直近ニュースをお題の素材に使います）も設定できます。
 その他（投稿タイミング、見出しと末尾の一言、通知ロール、オプトアウトのリアクション、投票、`DRY_RUN` など）はすべて任意です。項目の意味と既定値は `.env.example` のコメントを参照してください。
 
@@ -90,17 +90,21 @@ uv run python bot.py
 | `/topic now` | 投稿条件（時間帯・投稿間隔・静穏・一時停止）を無視してお題を1件投稿する |
 | `/topic stats` | 形式ごとの件数・平均スコア・**現在の選択重み**、直近お題の「6h→24h」の反応、いま投稿できない理由 |
 | `/topic queue` | キューの内訳（投稿可能 / 遅延待ち / 生成リトライ待ち）・再利用プール件数・計測待ち件数・前回の投稿時刻と投稿間隔が明ける時刻 |
-| `/topic status` | いま効いている `.env` の設定（モード・チャンネル・投稿タイミング・静穏判定・計測・自己紹介の扱い）を読み取り専用で表示する |
+| `/topic status` | いま効いている `.env` の設定（モード・チャンネル・**管理コマンドの実行者**・投稿タイミング・静穏判定・計測・自己紹介の扱い）を読み取り専用で表示する |
 | `/topic backfill [limit] [apply]` | 過去の自己紹介を再利用プールへ取り込む。既定はプレビューのみ（後述） |
 | `/topic pause` | 自動投稿を一時停止する（`state.json` に永続化するので再起動でも解除されない） |
 | `/topic resume` | 自動投稿を再開する |
 
 - コマンド一覧に表示されるのは **Manage Server 権限を持つメンバーだけ**です（一般メンバーには存在自体が見えない = ステルス設計の維持）
-- 実行できるのは **`OWNER_USER_ID` 本人だけ**です。他の管理者が打っても ephemeral で拒否理由が返ります（無言では終わりません）
-- **`OWNER_USER_ID` は事実上必須**です。未設定（空 / 0）だと誰も `/topic` を実行できず、起動時に warning ログが出ます
+- 実行できるのは **`OWNER_USER_ID` 本人**、または **`OWNER_ROLE_ID` のロールを持つメンバー**です（どちらかを満たせば OK）。それ以外の人が打っても ephemeral で拒否理由が返ります（無言では終わりません）
+- **`OWNER_USER_ID` と `OWNER_ROLE_ID` の少なくとも一方は事実上必須**です。両方とも未設定（空 / 0）だと誰も `/topic` を実行できず、起動時に warning ログが出ます。運営が1人なら `OWNER_USER_ID` だけ、チームで運用するなら「Bot 運用」のようなロールを作って `OWNER_ROLE_ID` に指定するのが想定です
 - `/topic pause` が止めるのは**自動投稿だけ**です。反応の計測・新規自己紹介のキュー取り込み・`/topic now` は動き続けます
 - `/topic status` は**表示だけ**で、設定の変更はできません（変更は `.env` を書き換えて再起動）。トークンと API キーの値は出力しません（設定されているかどうかだけを表示します）
 - 操作経路は `/topic` だけです。**プレフィックスコマンド（`!topic now` 等）は持ちません** — 組み込み先の既存 bot のコマンドと衝突させないためで、以前あった非推奨のフォールバックは削除済みです
+
+> **「実行できる」と「一覧に見える」は別のレイヤーです**
+> 実行の可否は上記のとおり `OWNER_USER_ID` / `OWNER_ROLE_ID` で決まりますが、**コマンド一覧に表示されるかどうかは Discord 側の権限設定（`Manage Server`）で決まります**。そのため `OWNER_ROLE_ID` に指定したロールが `Manage Server` を持たない場合、そのメンバーは**実行は許可されているのに `/topic` が候補に出てこない**状態になります（コマンド名を最後まで手入力すれば実行はできます）。
+> 一覧にも出したい場合は、**サーバー設定 → 連携サービス（Integrations） → 該当の Bot → `/topic`** から、そのロール（またはチャンネル）に対して表示を明示的に許可してください。Bot 側の既定値をサーバー管理者が上書きする仕組みなので、`.env` では変更できません。逆に「実行できる人にだけ見せたい」なら、運用ロールに `Manage Server` を与えるより、この連携サービス設定で絞るほうが権限を増やさずに済みます。
 
 ### `/topic backfill`
 
@@ -173,22 +177,23 @@ POST_WINDOW_END=24
 
 19. `OWNER_USER_ID` に自分の ID を設定 → `/topic now` で時間帯・間隔・静穏を無視して即投稿される
 20. Manage Server 権限のない別アカウントには `/topic` が一覧に出ない。運用者には見え、応答は本人にしか見えない
-21. `OWNER_USER_ID` を未設定（空）にして起動 → `/topic stats` などが ephemeral で「未設定のため使えない」と理由を返す（無反応にならない）
-22. `/topic now` を5分ワーカーの発火と重なるタイミングで打っても、お題が2連投されない
-23. `/topic pause` → 定期投稿が止まる（`/topic stats` の「状態」に表示・ログチャンネルに灰 embed）→ **PC を再起動しても一時停止のまま** → `/topic resume` で再開する
-24. `/topic backfill`（プレビュー）→ 件数を確認 → `apply:True` で取り込み → もう一度実行すると全件が「重複」になる。🚫 付きの自己紹介は除外され、取り込んだ分はプールに入る（新規キューがあればそちらが優先される）
-25. `/topic status` → `.env` を書き換えて再起動すると表示が変わる。トークンと API キーの値は出ない（`GEMINI_API_KEY` を空にすると「定型お題モード」と表示される）。`NEWS_CHANNEL_ID` の有無が「チャンネル」の行に「ニュース=…／なし」として出る
+21. `OWNER_USER_ID` と `OWNER_ROLE_ID` を両方とも未設定（空）にして起動 → `/topic stats` などが ephemeral で「未設定のため使えない」と理由を返す（無反応にならない）
+22. `OWNER_USER_ID` を空にして `OWNER_ROLE_ID` だけを設定 → そのロールを持つ別アカウントで `/topic status` が実行でき、ロールを外すと拒否理由が返る。ロールに `Manage Server` が無い場合は**一覧に出ないが手入力すれば実行できる**（表示層と実行層が別であることの確認。一覧にも出したいならサーバー設定 → 連携サービスで表示を許可する）
+23. `/topic now` を5分ワーカーの発火と重なるタイミングで打っても、お題が2連投されない
+24. `/topic pause` → 定期投稿が止まる（`/topic stats` の「状態」に表示・ログチャンネルに灰 embed）→ **PC を再起動しても一時停止のまま** → `/topic resume` で再開する
+25. `/topic backfill`（プレビュー）→ 件数を確認 → `apply:True` で取り込み → もう一度実行すると全件が「重複」になる。🚫 付きの自己紹介は除外され、取り込んだ分はプールに入る（新規キューがあればそちらが優先される）
+26. `/topic status` → `.env` を書き換えて再起動すると表示が変わる。トークンと API キーの値は出ない（`GEMINI_API_KEY` を空にすると「定型お題モード」と表示される）。`NEWS_CHANNEL_ID` の有無が「チャンネル」の行に「ニュース=…／なし」として出る。「管理コマンドの実行者」の行に `OWNER_USER_ID` / `OWNER_ROLE_ID` の設定状況が出る
 
 **反応の計測**
 
-26. 投稿されたお題にスレッドを立てて発言 → 計測時の「返信」に加算される
-27. 2点計測: `MEASURE_AFTER_HOURS=0` にして起動 → 即座に1点目が記録される → `state.json` の該当 `pending_measurements` の `posted_at` を25時間前に書き換えて再起動 → `at_hours=24` の行が追記され、その pending が消える
+27. 投稿されたお題にスレッドを立てて発言 → 計測時の「返信」に加算される
+28. 2点計測: `MEASURE_AFTER_HOURS=0` にして起動 → 即座に1点目が記録される → `state.json` の該当 `pending_measurements` の `posted_at` を25時間前に書き換えて再起動 → `at_hours=24` の行が追記され、その pending が消える
 
 **運用ログ**
 
-28. 投稿=緑 / `DRY_RUN`=黄 / **生成失敗の1回目で黄 embed（次のリトライ時刻付き）がすぐ出る** / 一時停止・バックフィル・起動通知=灰
-29. ログチャンネルの Embed Links 権限を外す → embed ではなくプレーンテキストでログが流れる
-30. Bot を起動する → 灰 embed の起動通知（DRY_RUN・一時停止・キュー件数）が出る
+29. 投稿=緑 / `DRY_RUN`=黄 / **生成失敗の1回目で黄 embed（次のリトライ時刻付き）がすぐ出る** / 一時停止・バックフィル・起動通知=灰
+30. ログチャンネルの Embed Links 権限を外す → embed ではなくプレーンテキストでログが流れる
+31. Bot を起動する → 灰 embed の起動通知（DRY_RUN・一時停止・キュー件数）が出る
 
 確認後、閾値を既定値（30 / 15 / 48 / 19 / 22）に戻すこと。
 
@@ -198,7 +203,7 @@ POST_WINDOW_END=24
 
 1. **再招待と権限**: `applications.commands` を含む URL で本番サーバーへ招待し直す。Bot 権限は `View Channels` / `Send Messages` / `Read Message History` の3つ。ログチャンネルを使うならそこに `Embed Links` も（任意）。`NEWS_CHANNEL_ID` を使うなら、そのニュースチャンネルでも `View Channels` / `Read Message History` が効いていること（読み取りのみ。Bot はそこへ投稿しません）
 2. **MESSAGE CONTENT INTENT が ON** になっていること（OFF だと本文が空で何も動きません）
-3. **`.env` を本番値に**: `INTRO_CHANNEL_ID` / `CHAT_CHANNEL_ID` / `OWNER_USER_ID` / `LOG_CHANNEL_ID`（ニュースを使うなら `NEWS_CHANNEL_ID` も）。あわせて **E2E 用の短縮値が残っていないか**を確認（既定は `MIN_DELAY_MINUTES=30` / `QUIET_MINUTES=15` / `POST_INTERVAL_HOURS=48` / `POST_WINDOW_START=19` / `POST_WINDOW_END=22`）
+3. **`.env` を本番値に**: `INTRO_CHANNEL_ID` / `CHAT_CHANNEL_ID` / `OWNER_USER_ID`（チーム運用なら `OWNER_ROLE_ID` も）/ `LOG_CHANNEL_ID`（ニュースを使うなら `NEWS_CHANNEL_ID` も）。あわせて **E2E 用の短縮値が残っていないか**を確認（既定は `MIN_DELAY_MINUTES=30` / `QUIET_MINUTES=15` / `POST_INTERVAL_HOURS=48` / `POST_WINDOW_START=19` / `POST_WINDOW_END=22`）
 4. **`state.json` をバックアップしてから空にする**（ファイルごと退避して削除）。テストサーバー由来の `message_id` は本番では全件 NotFound になり、テスト中の `topic_stats` が形式の重み学習と few-shot を汚染するためです
 5. **煙テスト**: `uv run pytest -q` が緑 / `uv run python try_gemini.py` でお題の文面と秘匿（専門用語・学校名・本名が出ていないか）を確認
 6. **`DRY_RUN=true` でソーク**: 数日流してログチャンネルの黄 embed で文面と投下タイミングを確認 → 問題なければ `DRY_RUN=false`

@@ -67,6 +67,7 @@ def settings():
         dry_run=False,
         log_channel_id=0,
         owner_user_id=0,
+        owner_role_id=0,
         intro_channel_id=111,
         chat_channel_id=222,
         news_channel_id=0,  # 既定は無効。ニュースを使うテストだけ上書きする
