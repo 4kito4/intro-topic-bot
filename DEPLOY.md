@@ -1,6 +1,8 @@
 # 導入手順（常駐ホスティングへの載せ方）
 
-この Bot を常時起動の環境へ載せるための手順です。Discord 側の準備（アプリ作成・招待・チャンネル ID の取得）は [README のセットアップ](README.md#セットアップ) にありますので、まずそちらを済ませてください。ここには**ホスティングの話だけ**を書いています。
+> **すでに運用している bot へ組み込む場合、この文書は不要です** → [INTEGRATION.md](INTEGRATION.md) へ。既存 bot のプロセスに相乗りするので、常駐ホスティングを別に用意する必要がありません。
+
+この Bot を**別 bot として並走**させるために、常時起動の環境へ載せる手順です。Discord 側の準備（アプリ作成・招待・チャンネル ID の取得）は [README のセットアップ](README.md#セットアップ) にありますので、まずそちらを済ませてください。ここには**ホスティングの話だけ**を書いています。
 
 方法は4つ用意しています。**Docker が動く環境なら方法2（Docker Compose）**が最短です。
 
@@ -130,9 +132,9 @@ journalctl -u intro-topic-bot -f
 注意点:
 
 - **`ExecStart` は絶対パスで書くこと**。systemd はログインシェルの `PATH` を引き継がないため `uv` だけでは起動しません。`which uv` で実際のパスを確認してください
-- **`EnvironmentFile=` は使いません**。この Bot は `config.py` が**リポジトリ直下（`config.py` と同じディレクトリ）の `.env`** を自分で読み込みます。`WorkingDirectory` やカレントディレクトリとは無関係なので、`.env` は必ず `/opt/intro-topic-bot/.env` に置いてください
-  （なお `EnvironmentFile=` で同じ変数を渡すこともできますが、その場合は**環境変数側が優先**され `.env` の値は無視されます。二重管理になって事故のもとなので、`.env` に一本化するのが無難です）
-- **書き込み権限**: `STATE_PATH` を設定しない場合、`state.json` はリポジトリ直下に作られます。実行ユーザーが書けるように `sudo chown -R bot:bot /opt/intro-topic-bot` しておいてください
+- **`WorkingDirectory=` を省略しないこと**。この Bot は `.env` を**カレントディレクトリ基準**で探します（見つからなければ親ディレクトリへ遡ります）。`WorkingDirectory=/opt/intro-topic-bot` と `.env` の置き場所（`/opt/intro-topic-bot/.env`）を必ず揃えてください。ずれていると `.env` が読まれず、起動時に「環境変数（または .env）に INTRO_CHANNEL_ID が設定されていません」のような必須項目のエラーで止まります
+- **`EnvironmentFile=` を使ってもかまいません**。`EnvironmentFile=/opt/intro-topic-bot/.env` を書けば systemd が環境変数として渡し、この Bot は**すでに設定されている環境変数を優先**するのでそのまま動きます（`.env` からの読み込みは穴埋めにしか使われません）。ただし両方に書いて値がずれると気づきにくいので、どちらか一方に一本化してください
+- **書き込み権限**: `STATE_PATH` を設定しない場合、`state.json` は `WorkingDirectory`（＝リポジトリ直下）に作られます。実行ユーザーが書けるように `sudo chown -R bot:bot /opt/intro-topic-bot` しておいてください
 - サーバーのタイムゾーンが UTC でも**投稿時間帯（19〜22時 JST）の判定は正しく動きます**（コード側で JST を固定オフセットとして持っているため）。影響を受けるのは `journalctl` に出るログの時刻表示だけなので、揃えたい場合は `sudo timedatectl set-timezone Asia/Tokyo` してください
 
 ## 6. 方法4: PaaS（Railway / Koyeb など）

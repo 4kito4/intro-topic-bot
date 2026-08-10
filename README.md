@@ -10,6 +10,10 @@
 -# 一言でも、リアクションだけでも歓迎
 ```
 
+> **どちらの入れ方をしますか**
+> - **すでに運用している bot へ組み込む** → [INTEGRATION.md](INTEGRATION.md) へ。`intro_topic/` フォルダをコピーして `await bot.load_extension("intro_topic")` を1行足すだけです（追加のホスティングは不要）
+> - **単体で動かす（別 bot として並走させる）** → このまま読み進めてください。常駐ホスティングへの載せ方は [DEPLOY.md](DEPLOY.md) にあります
+
 投稿の器は**毎回同じ**です（1行目 = `TOPIC_TITLE`＋その回のテーマ語、末尾 = `TOPIC_FOOTER` のサブテキスト。どちらも `.env` で変更可、フッターは空なら出ません）。テーマ語はお題と一緒に生成される「題材を表す短い語」で、Discord の**通知とチャンネル一覧のプレビューには本文の先頭しか出ない**ため、開く前に何の話かが伝わるように見出しへ添えています（生成されなかった回は `TOPIC_TITLE` だけになります）。お題の形式によって見出しや装飾を変えることはしません — 定期投稿は毎回同じ体裁で出るほうが自然で、雑談に混ざりやすいためです。問いの前には、良い導入文が作れたときだけ1文が入ります。
 
 ## セットアップ
@@ -62,6 +66,8 @@ uv sync
 uv run python bot.py
 ```
 
+`bot.py` は `intro_topic/` を `load_extension` して常駐させるだけの薄いランチャーです（`.env` と `state.json` は**起動したディレクトリ基準**で探すので、リポジトリ直下から起動してください）。
+
 起動に成功すると、ログチャンネルに灰色の embed で「起動しました（DRY_RUN / 一時停止の状態・キュー件数）」が流れます。ローカル PC 運用で意図しない再起動に気づくための導線です。
 
 ### スラッシュコマンドが登録できなかったとき
@@ -73,7 +79,7 @@ uv run python bot.py
 1. 「セットアップ 1. Discord Bot の作成」の手順4で `applications.commands` を含む招待 URL を作り直し、同じサーバーへ再招待する（キック不要。URL を踏み直すだけ）
 2. Bot を再起動する（登録は起動時に1回だけ実行されます）
 
-なおこのエラーが出ても Bot は起動を続け、**自動投稿・反応計測は通常どおり動きます**。復旧するまでの手動投稿は非推奨のフォールバック `!topic now` で行えます。
+なおこのエラーが出ても Bot は起動を続け、**自動投稿・反応計測は通常どおり動きます**。復旧するまでの間、Discord 上からの操作（`/topic now` などの管理コマンド）だけができない状態になります。急いで止めたい場合は Bot のプロセスを停止するか、`.env` に `DRY_RUN=true` を入れて再起動してください（投稿せず、投稿予定の内容がログに出るだけになります）。
 
 ## 管理コマンド
 
@@ -94,7 +100,7 @@ uv run python bot.py
 - **`OWNER_USER_ID` は事実上必須**です。未設定（空 / 0）だと誰も `/topic` を実行できず、起動時に warning ログが出ます
 - `/topic pause` が止めるのは**自動投稿だけ**です。反応の計測・新規自己紹介のキュー取り込み・`/topic now` は動き続けます
 - `/topic status` は**表示だけ**で、設定の変更はできません（変更は `.env` を書き換えて再起動）。トークンと API キーの値は出力しません（設定されているかどうかだけを表示します）
-- `!topic now`（オーナーの発言によるトリガー）は**非推奨**です。スラッシュコマンドの登録が本番で失敗したときの唯一の制御経路として残しているだけで、**次のラウンドで削除します**
+- 操作経路は `/topic` だけです。**プレフィックスコマンド（`!topic now` 等）は持ちません** — 組み込み先の既存 bot のコマンドと衝突させないためで、以前あった非推奨のフォールバックは削除済みです
 
 ### `/topic backfill`
 
@@ -125,7 +131,7 @@ uv run python try_gemini.py "自己紹介文..."  # 任意テキスト
 uv run pytest -q
 ```
 
-静穏判定・候補選択・形式の重み計算・反応計測の時点判定・お題の文面組み立て（固定の器・見出しのテーマ語・ロールメンション）・定型お題の選択・ログの色分け・管理コマンドの整形・キュー投入（同一著者の置換）・バックフィルの判定・`state.json` の読み書きを検証します。
+静穏判定・候補選択・形式の重み計算・反応計測の時点判定・お題の文面組み立て（固定の器・見出しのテーマ語・ロールメンション）・定型お題の選択・ログの色分け・管理コマンドの整形・キュー投入（同一著者の置換）・バックフィルの判定・`state.json` の読み書きを検証します。あわせて `tests/test_extension.py` が組み込みのスモークテスト（`load_extension` で `/topic` が載る・`on_message` を奪わない・`unload_extension` でワーカーが止まる）を担当します。
 
 ### E2E（テストサーバー）
 
@@ -188,7 +194,7 @@ POST_WINDOW_END=24
 
 ## 本番切替チェックリスト
 
-テストサーバーでの検証が済み、本番サーバーへ向ける前に上から順に確認します。常駐ホスティング（Docker / Docker Compose / systemd / PaaS）への載せ方は `DEPLOY.md` を参照してください。
+テストサーバーでの検証が済み、本番サーバーへ向ける前に上から順に確認します。常駐ホスティング（Docker / Docker Compose / systemd / PaaS）への載せ方は `DEPLOY.md`、既存 bot へ組み込む場合の読み替えは `INTEGRATION.md` を参照してください。
 
 1. **再招待と権限**: `applications.commands` を含む URL で本番サーバーへ招待し直す。Bot 権限は `View Channels` / `Send Messages` / `Read Message History` の3つ。ログチャンネルを使うならそこに `Embed Links` も（任意）。`NEWS_CHANNEL_ID` を使うなら、そのニュースチャンネルでも `View Channels` / `Read Message History` が効いていること（読み取りのみ。Bot はそこへ投稿しません）
 2. **MESSAGE CONTENT INTENT が ON** になっていること（OFF だと本文が空で何も動きません）
@@ -272,17 +278,22 @@ Bot 側の設定ではなく、**返信が付くかどうかを左右する運�
 
 ## ファイル構成
 
+機能の実体は `intro_topic/` の中で完結しています（パッケージの外を import しません）。既存 bot へ組み込むときはこのフォルダだけをコピーします。
+
 | ファイル | 責務 |
 |---|---|
-| `bot.py` | エントリポイント。検知・補完・静穏判定・候補選択・投稿・反応計測・管理コマンド・運用ログ |
-| `topic_generator.py` | Gemini 呼び出し（Discord 非依存）。生成と自己批評 |
-| `prompts/` | `system.md`（お題の書き方・秘匿ルール・品質基準）と `judge.md`（審査基準）。コードを触らずに文面だけ調整できる |
-| `store.py` | `state.json` の読み書き（アトミック保存） |
-| `config.py` | `.env` の読み込みと検証 |
+| `intro_topic/__init__.py` | `load_extension` のエントリポイント。`setup(bot)` で Cog を載せる |
+| `intro_topic/cog.py` | 本体の Cog。検知・補完・静穏判定・候補選択・投稿・反応計測・`/topic`・運用ログ |
+| `intro_topic/topic_generator.py` | Gemini 呼び出し（Discord 非依存）。生成と自己批評 |
+| `intro_topic/prompts/` | `system.md`（お題の書き方・秘匿ルール・品質基準）と `judge.md`（審査基準）。コードを触らずに文面だけ調整できる |
+| `intro_topic/store.py` | `state.json` の読み書き（アトミック保存） |
+| `intro_topic/config.py` | 環境変数（と `.env`）の読み込みと検証 |
+| `bot.py` | 単体起動用のランチャー。`commands.Bot` を作って `intro_topic` を読み込み、`/topic` をギルドへ同期する |
 | `try_gemini.py` | Gemini 部の単体確認 CLI |
 | `try_judge.py` | `judge.md` の回帰確認 CLI。固定のお題を審査させて期待合否と突き合わせる |
-| `tests/` | pytest。Discord / Gemini を呼ばないロジックのテスト |
+| `tests/` | pytest。Discord / Gemini を呼ばないロジックのテストと、組み込みのスモークテスト |
 | `Dockerfile` | コンテナ実行用のイメージ定義（uv で依存を固定、非 root 実行、状態は `/data`） |
 | `compose.yaml` | Docker Compose の最小構成。`docker compose up -d` で常駐させる |
-| `DEPLOY.md` | 運用者向けの導入手順書（Docker / Compose / systemd / PaaS・更新とロールバック） |
+| `INTEGRATION.md` | 運用者向けの統合手順書（既存 bot へ組み込む場合） |
+| `DEPLOY.md` | 運用者向けの導入手順書（別 bot として並走させる場合。Docker / Compose / systemd / PaaS・更新とロールバック） |
 | `proposal.md` | Bot 運用者向けの組み込み提案資料 |
