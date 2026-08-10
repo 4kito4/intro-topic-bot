@@ -188,7 +188,7 @@ POST_WINDOW_END=24
 
 ## 本番切替チェックリスト
 
-テストサーバーでの検証が済み、本番サーバーへ向ける前に上から順に確認します。
+テストサーバーでの検証が済み、本番サーバーへ向ける前に上から順に確認します。常駐ホスティング（Docker / Docker Compose / systemd / PaaS）への載せ方は `DEPLOY.md` を参照してください。
 
 1. **再招待と権限**: `applications.commands` を含む URL で本番サーバーへ招待し直す。Bot 権限は `View Channels` / `Send Messages` / `Read Message History` の3つ。ログチャンネルを使うならそこに `Embed Links` も（任意）。`NEWS_CHANNEL_ID` を使うなら、そのニュースチャンネルでも `View Channels` / `Read Message History` が効いていること（読み取りのみ。Bot はそこへ投稿しません）
 2. **MESSAGE CONTENT INTENT が ON** になっていること（OFF だと本文が空で何も動きません）
@@ -282,4 +282,7 @@ Bot 側の設定ではなく、**返信が付くかどうかを左右する運�
 | `try_gemini.py` | Gemini 部の単体確認 CLI |
 | `try_judge.py` | `judge.md` の回帰確認 CLI。固定のお題を審査させて期待合否と突き合わせる |
 | `tests/` | pytest。Discord / Gemini を呼ばないロジックのテスト |
+| `Dockerfile` | コンテナ実行用のイメージ定義（uv で依存を固定、非 root 実行、状態は `/data`） |
+| `compose.yaml` | Docker Compose の最小構成。`docker compose up -d` で常駐させる |
+| `DEPLOY.md` | 運用者向けの導入手順書（Docker / Compose / systemd / PaaS・更新とロールバック） |
 | `proposal.md` | Bot 運用者向けの組み込み提案資料 |
