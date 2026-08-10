@@ -13,10 +13,10 @@ from unittest.mock import MagicMock
 
 import discord
 
-import bot as botmod
-from bot import NEWS_FETCH_LIMIT, NEWS_MAX_AGE_DAYS, NEWS_TEXT_MAX, _news_message_text
-from store import State
-from topic_generator import TOPIC_FORMATS, TopicResult, _build_prompt
+import intro_topic.cog as botmod
+from intro_topic.cog import NEWS_FETCH_LIMIT, NEWS_MAX_AGE_DAYS, NEWS_TEXT_MAX, _news_message_text
+from intro_topic.store import State
+from intro_topic.topic_generator import TOPIC_FORMATS, TopicResult, _build_prompt
 
 NEWS_CHANNEL_ID = 333
 

@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from bot import _backfill_verdict
-from store import PoolItem, QueueItem, State
+from intro_topic.cog import _backfill_verdict
+from intro_topic.store import PoolItem, QueueItem, State
 
 
 @pytest.fixture

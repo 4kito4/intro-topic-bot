@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from bot import _compose_poll_header, _compose_text_body, _with_role_mention
-from topic_generator import TOPIC_FORMATS, TopicResult
+from intro_topic.cog import _compose_poll_header, _compose_text_body, _with_role_mention
+from intro_topic.topic_generator import TOPIC_FORMATS, TopicResult
 
 TITLE = "💭 今日のお題"
 FOOTER = "一言でも、リアクションだけでも歓迎"

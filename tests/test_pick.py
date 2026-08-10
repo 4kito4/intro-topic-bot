@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from store import State
+from intro_topic.store import State
 
 
 def test_キューは古いものから処理する(make_bot, make_queue_item):

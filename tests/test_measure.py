@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from bot import _due_checkpoint_hours, _is_measure_given_up, _measure_checkpoints
-from store import PendingMeasurement, State, TopicStat
+from intro_topic.cog import _due_checkpoint_hours, _is_measure_given_up, _measure_checkpoints
+from intro_topic.store import PendingMeasurement, State, TopicStat
 
 CHECKPOINTS = (6, 24)
 

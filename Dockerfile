@@ -40,9 +40,10 @@ WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
 
-# 実行に必要なものだけ入れる（tests/ や try_*.py は含めない）
-COPY bot.py config.py store.py topic_generator.py ./
-COPY prompts ./prompts
+# 実行に必要なものだけ入れる（tests/ や try_*.py は含めない）。
+# prompts/ はパッケージの中にあるので intro_topic/ ごと入る
+COPY bot.py ./
+COPY intro_topic ./intro_topic
 
 # /data（状態ファイルの置き場所）には永続ボリュームをマウントすること。
 # VOLUME 宣言はあえて置いていない（-v の付け忘れが匿名ボリュームで隠れてしまうため）

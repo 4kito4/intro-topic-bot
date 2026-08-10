@@ -1,7 +1,7 @@
 """テスト共通のフィクスチャ。Discord / Gemini は一切呼ばない。
 
-discord.Client を実体化せず、必要なメソッドだけを持つスタブに
-IntroTopicBot のメソッドを載せて検証する。
+commands.Bot / Cog を実体化せず、必要なメソッドだけを持つスタブに
+IntroTopicCog のメソッドを載せて検証する。
 """
 
 from __future__ import annotations
@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import bot as botmod
-from bot import IntroTopicBot
-from store import PoolItem, QueueItem, State
+import intro_topic.cog as botmod
+from intro_topic.cog import IntroTopicCog
+from intro_topic.store import PoolItem, QueueItem, State
 
 UTC = timezone.utc
 NOW = datetime(2026, 7, 30, 11, 0, tzinfo=UTC)  # JST 20:00（投稿時間帯内）
@@ -78,7 +78,7 @@ def settings():
 
 
 class BotStub:
-    """IntroTopicBot の純ロジック部分だけを借りたスタブ。"""
+    """IntroTopicCog の純ロジック部分だけを借りたスタブ。"""
 
     def __init__(self, state: State, settings: SimpleNamespace) -> None:
         self.state = state
@@ -87,6 +87,9 @@ class BotStub:
         self.logged: list[tuple[str, str, str]] = []
         self.channels: dict[int, object] = {}
         self._post_lock = asyncio.Lock()
+        # Cog はチャンネルをホスト bot 経由（self.bot.get_channel）で引くので、
+        # 自分自身をホスト bot 役にしてスタブを1つで済ませる
+        self.bot = self
 
     def save(self) -> None:
         self.saved += 1
@@ -95,27 +98,26 @@ class BotStub:
         """Discord のチャンネル取得。テストが channels に入れたスタブだけを返す。"""
         return self.channels.get(channel_id)
 
-    async def _log_event(self, kind: str, title: str, body: str = "") -> None:
+    async def log_event(self, kind: str, title: str, body: str = "") -> None:
         """運用ログの送信は Discord API を叩くので記録だけする。"""
         self.logged.append((kind, title, body))
 
-    _enqueue_intro = IntroTopicBot._enqueue_intro
-    _generate_and_post = IntroTopicBot._generate_and_post
-    _post_once = IntroTopicBot._post_once
-    _post_fallback = IntroTopicBot._post_fallback
-    _record_post = IntroTopicBot._record_post
-    _report_dry_run = IntroTopicBot._report_dry_run
-    _pick_item = IntroTopicBot._pick_item
-    _pick_pool_item = IntroTopicBot._pick_pool_item
-    _pick_news_text = IntroTopicBot._pick_news_text
-    _take_source = IntroTopicBot._take_source
-    _format_candidates = IntroTopicBot._format_candidates
-    _pick_format = IntroTopicBot._pick_format
-    _blocked_reason = IntroTopicBot._blocked_reason
-    _quiet_blocked_reason = IntroTopicBot._quiet_blocked_reason
-    _good_examples = IntroTopicBot._good_examples
-    _prune_expired = IntroTopicBot._prune_expired
-    _is_manual_trigger = IntroTopicBot._is_manual_trigger
+    _enqueue_intro = IntroTopicCog._enqueue_intro
+    _generate_and_post = IntroTopicCog._generate_and_post
+    _post_once = IntroTopicCog._post_once
+    _post_fallback = IntroTopicCog._post_fallback
+    _record_post = IntroTopicCog._record_post
+    _report_dry_run = IntroTopicCog._report_dry_run
+    _pick_item = IntroTopicCog._pick_item
+    _pick_pool_item = IntroTopicCog._pick_pool_item
+    _pick_news_text = IntroTopicCog._pick_news_text
+    _take_source = IntroTopicCog._take_source
+    _format_candidates = IntroTopicCog._format_candidates
+    _pick_format = IntroTopicCog._pick_format
+    _blocked_reason = IntroTopicCog._blocked_reason
+    _quiet_blocked_reason = IntroTopicCog._quiet_blocked_reason
+    _good_examples = IntroTopicCog._good_examples
+    _prune_expired = IntroTopicCog._prune_expired
 
 
 @pytest.fixture

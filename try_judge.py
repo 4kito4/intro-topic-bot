@@ -27,8 +27,8 @@ from dataclasses import dataclass
 
 from google import genai
 
-from config import load_gemini_only_settings
-from topic_generator import (
+from intro_topic.config import load_gemini_only_settings
+from intro_topic.topic_generator import (
     FALLBACK_TOPICS,
     TopicFormat,
     TopicResult,

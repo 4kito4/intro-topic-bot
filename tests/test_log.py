@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from bot import (
+from intro_topic.cog import (
     EMBED_DESCRIPTION_MAX,
     LOG_COLORS,
     LOG_TEXT_MAX,
@@ -17,7 +17,7 @@ from bot import (
     _startup_summary,
     _truncate,
 )
-from store import State
+from intro_topic.store import State
 
 # --- 色 -------------------------------------------------------------------
 

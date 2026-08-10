@@ -6,8 +6,8 @@ interaction のやり取りはコマンドのガワ側にあり Discord API を�
 
 from __future__ import annotations
 
-from bot import _authorization_error, _format_queue_summary, _format_stats_summary
-from store import PendingMeasurement, State, TopicStat
+from intro_topic.cog import _authorization_error, _format_queue_summary, _format_stats_summary
+from intro_topic.store import PendingMeasurement, State, TopicStat
 
 OWNER = 42
 MEASURED_AT = "2026-07-30T11:00:00+00:00"

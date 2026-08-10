@@ -5,7 +5,7 @@ Discord API は叩かないので、メッセージだけスタブに差し替�
 
 from __future__ import annotations
 
-from store import State
+from intro_topic.store import State
 
 
 def _ids(state: State) -> list[int]:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from store import State
+from intro_topic.store import State
 
 
 def _state(iso, *offsets_minutes):

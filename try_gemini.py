@@ -11,8 +11,8 @@ from __future__ import annotations
 import logging
 import sys
 
-from config import DEFAULT_TOPIC_TITLE, load_gemini_only_settings
-from topic_generator import (
+from intro_topic.config import DEFAULT_TOPIC_TITLE, load_gemini_only_settings
+from intro_topic.topic_generator import (
     FORMAT_LABELS,
     TOPIC_FORMATS,
     ReviewResult,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from store import State
+from intro_topic.store import State
 
 
 class _PostSpy:
@@ -39,7 +39,7 @@ def test_ワーカー経路も条件を満たせば投稿する(make_bot, iso):
     assert summary == "お題を投稿しました"
 
 
-def test_手動経路は投稿条件を無視して投稿する(make_bot, iso):
+def test_手動経路_topic_now_は投稿条件を無視して投稿する(make_bot, iso):
     bot = make_bot(State(last_posted_at=iso(hours=1)))
     bot._post_once = spy = _PostSpy()
     summary = asyncio.run(bot._generate_and_post())
@@ -69,7 +69,7 @@ def test_投稿処理は同時に走らない(make_bot, iso):
     assert peak == 1
 
 
-def test_手動投稿の生成中にワーカーが発火しても2件目は投稿されない(make_bot, iso, now):
+def test_topic_now_の生成中にワーカーが発火しても2件目は投稿されない(make_bot, iso, now):
     bot = make_bot(State(last_posted_at=iso(days=3)))
     posted = []
 
@@ -83,7 +83,7 @@ def test_手動投稿の生成中にワーカーが発火しても2件目は投�
 
     async def main() -> tuple[str, str]:
         return await asyncio.gather(
-            bot._generate_and_post(),  # 手動トリガー
+            bot._generate_and_post(),  # /topic now
             bot._generate_and_post(enforce_conditions=True),  # 5分ワーカー
         )
 

@@ -10,10 +10,10 @@ import random
 
 import pytest
 
-import bot as botmod
-from bot import RECENT_TOPICS_KEPT
-from store import State
-from topic_generator import FALLBACK_TOPICS, TOPIC_FORMATS, TopicResult, fallback_topic
+import intro_topic.cog as botmod
+from intro_topic.cog import RECENT_TOPICS_KEPT
+from intro_topic.store import State
+from intro_topic.topic_generator import FALLBACK_TOPICS, TOPIC_FORMATS, TopicResult, fallback_topic
 
 QUESTIONS = [topic.topic_question for topic in FALLBACK_TOPICS]
 THEME_MAX_LEN = 8  # 見出しに並べる語なので system.md と同じ上限で縛る

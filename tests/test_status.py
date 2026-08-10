@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from bot import _format_status_summary
-from store import State
+from intro_topic.cog import _format_status_summary
+from intro_topic.store import State
 
 
 def _with(settings, **overrides):

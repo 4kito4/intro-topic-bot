@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-import bot as botmod
-from bot import _format_weights, _valid_poll_options
-from store import State, TopicStat
-from topic_generator import TOPIC_FORMATS
+import intro_topic.cog as botmod
+from intro_topic.cog import _format_weights, _valid_poll_options
+from intro_topic.store import State, TopicStat
+from intro_topic.topic_generator import TOPIC_FORMATS
 
 MEASURE_AT = 6  # conftest の settings.measure_after_hours
 
