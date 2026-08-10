@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    # .env の中身を環境変数としてコンテナへ渡す（イメージには .env を含めない）
+    env_file: .env
+    environment:
+      # .env.example の STATE_PATH は空のため、env_file 経由だと空文字で上書きされて
+      # 状態がボリュームの外（/app/state.json）に落ちてしまう。ここで明示的に上書きする
+      - STATE_PATH=/data/state.json
+    volumes:
+      # 状態ファイルの永続化。これが無いと再作成のたびに処理済み ID・再利用プールが消える
+      - state:/data
+    restart: unless-stopped
+
+volumes:
+  state:

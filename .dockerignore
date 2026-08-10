@@ -1,0 +1,35 @@
+# イメージに入れないもの。
+# 特に .env と state.json は「入れてはいけない」もの（トークンと自己紹介本文を含む）。
+
+# 秘密情報・実行時状態（.env.* も対象なので .env.example も入らない）
+.env
+.env.*
+state.json*
+
+# Python の生成物・仮想環境
+.venv/
+__pycache__/
+*.py[oc]
+.pytest_cache/
+build/
+dist/
+wheels/
+*.egg-info
+
+# 実行に不要なソース
+tests/
+try_gemini.py
+try_judge.py
+
+# バージョン管理・ドキュメント・画像
+.git/
+.gitignore
+.dockerignore
+README.md
+DEPLOY.md
+AGENTS.md
+CLAUDE.md
+proposal.md
+assets/
+Dockerfile
+compose.yaml
